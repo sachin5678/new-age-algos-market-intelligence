@@ -196,9 +196,9 @@ async function probeBotDelivery({ botToken, chatId, apiBase = 'https://api.teleg
   const call = async (method, params = {}) => {
     const url = `${apiBase}/bot${botToken}/${method}`;
     const res = await fetch(url, {
-      method: params.method ?? 'POST',
+      method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: params.body ?? JSON.stringify({ chat_id: String(chatId) }),
+      body: JSON.stringify({ chat_id: String(chatId), ...params }),
     });
     const data = await res.json().catch(() => null);
     return { ok: Boolean(data?.ok), data, status: res.status };
@@ -208,7 +208,8 @@ async function probeBotDelivery({ botToken, chatId, apiBase = 'https://api.teleg
   if (!me.ok) return { ok: false, error: `getMe failed: ${me.data?.description ?? me.status}` };
   const bot = me.data.result.username;
 
-  const member = await call('getChatMember');
+  // getChatMember needs the bot's own user_id — passing only chat_id is a 400.
+  const member = await call('getChatMember', { user_id: me.data.result.id });
   if (!member.ok) {
     return { ok: false, bot, error: `getChatMember failed: ${member.data?.description ?? member.status}` };
   }
