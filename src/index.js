@@ -16,6 +16,8 @@ import { createPoller } from './scheduler/index.js';
 import { createSourceRegistry } from './normalize/sources.js';
 import { buildPreMarketContext, buildClosingContext } from './briefings/context.js';
 import { formatPreMarket, formatClosing } from './telegram/briefings.js';
+import { chunkMessage } from './telegram/format.js';
+import { labelChunks } from './telegram/theme.js';
 
 const USAGE = `New Age Algos — market intelligence pipeline
 
@@ -84,12 +86,15 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   const ctx = kind === 'premarket'
     ? buildPreMarketContext({ snapshots, events, now })
     : buildClosingContext({ snapshots, events, now });
-  const text = kind === 'premarket' ? formatPreMarket(ctx) : formatClosing(ctx);
+  const text = kind === 'premarket' ? formatPreMarket(ctx, { now }) : formatClosing(ctx, { now });
 
   let sent = false;
   let sendError = null;
   try {
-    await transport.send(text, { mode: kind, category: 'BRIEFING', event_id: runId });
+    // Briefings are budget-fitted, so a split is rare; label parts if it happens.
+    for (const chunk of labelChunks(chunkMessage(text, 4096))) {
+      await transport.send(chunk, { mode: kind, category: 'BRIEFING', event_id: runId });
+    }
     sent = true;
   } catch (err) {
     sendError = err.message;

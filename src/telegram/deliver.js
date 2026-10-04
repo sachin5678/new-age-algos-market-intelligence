@@ -1,4 +1,5 @@
 import { formatAlert, chunkMessage } from './format.js';
+import { labelChunks } from './theme.js';
 
 /**
  * TELEGRAM_SEND stage: takes publish decisions and hands them to the transport.
@@ -24,8 +25,11 @@ export async function deliverEvents(decisions, ctx) {
     const text = formatAlert(event, verdict, {
       priority: verdict?.publication_priority ?? 'high',
       footer: decision.footer ?? null,
+      now,
     });
-    const chunks = chunkMessage(text, 4096);
+    // Split only as a last resort (fitToBudget already compacts the message);
+    // label the parts so a reader can tell they continue the same story.
+    const chunks = labelChunks(chunkMessage(text, 4096));
     let lastMessageId = null;
     try {
       for (const chunk of chunks) {

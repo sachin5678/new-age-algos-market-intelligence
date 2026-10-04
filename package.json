@@ -13,6 +13,7 @@
     "market-check": "node src/index.js --mode intraday --job-type market-check",
     "health-check": "node src/index.js --health-check",
     "market-news": "node src/index.js --mode intraday --job-type market-news",
+    "samples": "node scripts/print-samples.mjs",
     "test": "node --test"
   },
   "engines": {

@@ -121,8 +121,15 @@ Rules — always follow:
   clearly establishes the relationship; otherwise return an empty array.
 - summary: 2-3 factual sentences. facts: concrete facts drawn only from the provided content.
 - market_relevance: why this matters for Indian markets today — factual, no advice.
+- trader_takeaway: 1-2 sentences of WHAT TO WATCH (sectors, levels, confirmation points,
+  upcoming data) as market intelligence — never a recommendation to buy/sell, never advice.
+  Use "" when the content supports no such observation.
 - publication_priority: "high" only if an NSE trader needs to know this intraday today;
   "medium" if notable; "low" if minor.
+
+NOTE: source_name, source_url and confirmation status (confirmed / reported /
+awaiting official confirmation) are derived deterministically from the source
+hierarchy by the pipeline — do NOT output them.
 
 Output ONLY a strict JSON object with exactly these keys:
 {
@@ -131,6 +138,7 @@ Output ONLY a strict JSON object with exactly these keys:
   "summary": string,
   "facts": string[],
   "market_relevance": string,
+  "trader_takeaway": string,
   "affected_sectors": string[],
   "affected_stocks": string[],
   "impact": "positive|negative|mixed|neutral|unclear",
@@ -223,6 +231,7 @@ Output ONLY a strict JSON object with exactly these keys:
         ? parsed.facts.filter((f) => typeof f === 'string' && f.trim()).map((f) => f.trim().slice(0, 300)).slice(0, 8)
         : [],
       market_relevance: str(parsed.market_relevance, 400),
+      trader_takeaway: str(parsed.trader_takeaway, 400),
       affected_sectors: list(parsed.affected_sectors, event.sectors ?? []),
       affected_stocks: list(parsed.affected_stocks, event.companies ?? []),
       impact: pick(parsed.impact, IMPACTS, 'unclear'),
@@ -290,6 +299,7 @@ class RulesOnlyProvider extends BaseAIProvider {
       summary: (event.description ?? '').slice(0, 240),
       facts: [],
       market_relevance: '',
+      trader_takeaway: '',
       affected_sectors: event.sectors ?? [],
       affected_stocks: event.companies ?? [],
       impact: 'unclear',

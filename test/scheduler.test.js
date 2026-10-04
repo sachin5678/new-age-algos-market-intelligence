@@ -108,7 +108,7 @@ test('1) New SEBI official event → ALERT sent', async () => {
   }], { now: MARKET_NOW });
   assert.equal(h.transport.sent.length, 1, 'exactly one alert for new SEBI event');
   assert.ok(h.transport.sent[0].text.includes('Confirmed — NSE'));
-  assert.ok(h.transport.sent[0].text.includes('🚨 <b>MARKET ALERT</b>'));
+  assert.ok(h.transport.sent[0].text.includes('⚡ <b>HIGH-IMPACT MARKET ALERT</b>'));
 });
 
 test('2) Duplicate news article (same URL) → NO alert', async () => {

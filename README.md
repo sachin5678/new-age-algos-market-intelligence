@@ -154,20 +154,58 @@ Disabled/failing AI (or an out-of-credit key) → rules-only fallback verdict wi
 
 ## Telegram output
 
-Messages are delivered as **Telegram HTML** (`<b>`, `<i>`, `<u>`, `<code>`).
-MarkdownV2 is deliberately not used: gramjs' MarkdownV2 parser ignores backslash
-escapes and mangles hyphens, which made `\(Reuters\)` / `\-` render literally.
+Messages are delivered as **Telegram HTML** (`<b>`, `<i>`, `<u>`, `<code>`,
+`<blockquote>`, `<a href>`) — MarkdownV2 is deliberately not used: gramjs'
+MarkdownV2 parser ignores backslash escapes and mangles hyphens, which made
+`\(Reuters\)` / `\-` render literally.
 
-- **Intraday alert** (`formatAlert`): `🚨 MARKET ALERT` wire format — headline, 2–3
-  sentence summary, 📌 market relevance, 🏭 sectors, 📊 stocks (only when the
-  information supports the relationship), 🔎 source, ⚠️ status, `— New Age Algos`.
-  Empty sections are omitted; raw scores/classification internals never appear.
-- **Pre-market brief** (`--briefing premarket`): global cues (US/Asia, USD/INR,
-  crude, gold), Indian setup (NIFTY/BANKNIFTY), top 5 developments, 6 watch items,
-  6 key events, tagline footer.
-- **Closing brief** (`--briefing closing`): NIFTY/BANKNIFTY, breadth, top/weak
-  sectors, 5 key movers, top 5 developments, FII/DII, global cues, tomorrow to
-  watch, tagline footer.
+Every message is built by the shared template system (`src/telegram/theme.js`
+for primitives, `format.js` for alerts/snapshot, `briefings.js` for scheduled
+briefs) and framed with the brand block:
+
+```
+🌅 <b>NEW AGE ALGOS</b>
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>PRE-MARKET INTELLIGENCE</b>
+<i>04 OCT 2026 • 08:30 IST</i>
+…
+━━━━━━━━━━━━━━━━━━━━
+⚡ <b>NEW AGE ALGOS</b>
+<i>Data-driven • Systematic • Transparent</i>
+```
+
+Templates:
+
+| Template | Function | Shape |
+| --- | --- | --- |
+| Breaking / high-impact alert | `formatBreakingAlert` | slug → fact → 📌 why it matters → 📊 market impact → 🧠 view (blockquote) → 🔗 source + ✅/🟡/⚠️ status |
+| Regular market update | `formatIntradayAlert` | compact version of the same, with 👀 watch line |
+| Market snapshot | `formatMarketSnapshot` | monospace `<code>` dashboard: indices, breadth, flows, leaders/laggards |
+| Pre-market intelligence | `formatPreMarket` | WHAT MATTERS TODAY (≤5) → watch → global cues → Indian setup → key events → view |
+| Market wrap | `formatClosing` | indices → breadth → key driver → what moved → laggards → movers → flows → global → tomorrow's watch → view |
+
+Rules baked in:
+
+- **Fact / relevance / interpretation are visually separated.** The view is only
+  rendered when the AI actually produced a `trader_takeaway`; relevance only when
+  `market_relevance` exists — nothing is invented in rules-only mode.
+- **Confirmation status comes from the source hierarchy** (tier 1 → ✅ Confirmed,
+  media on a regulatory topic → ⚠️ Awaiting official confirmation, tier 4 →
+  Unconfirmed) — never from the model.
+- **Sources are hyperlinked only when a real http(s) URL exists**, always escaped;
+  otherwise the source name is plain text.
+- **Every dynamic value is HTML-escaped** (`<`, `>`, `&`), including headlines
+  like `C++ / 5% / (FY24)`.
+- **Length budget 3600 chars**: density is reduced (fewer items, shorter
+  paragraphs, optional sections dropped) before any split; split parts are
+  labelled `part 1 of 2`.
+- Missing metrics are omitted — never rendered as `0` or `NaN`.
+
+Preview all five templates with real-looking fixtures (nothing is sent):
+
+```bash
+npm run samples        # scripts/print-samples.mjs
+```
 
 Briefings are built only from available data (snapshots from the inbox + recent
 store events) — missing sections are omitted, never fabricated. Lists are capped

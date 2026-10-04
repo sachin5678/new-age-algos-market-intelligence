@@ -67,8 +67,15 @@ Rules — always follow:
   clearly establishes the relationship; otherwise return an empty array.
 - summary: 2-3 factual sentences. facts: concrete facts drawn only from the provided content.
 - market_relevance: why this matters for Indian markets today — factual, no advice.
+- trader_takeaway: 1-2 sentences of WHAT TO WATCH (sectors, levels, confirmation points,
+  upcoming data) as market intelligence — never a recommendation to buy/sell, never advice.
+  Use "" when the content supports no such observation.
 - publication_priority: "high" only if an NSE trader needs to know this intraday today;
   "medium" if notable; "low" if minor.
+
+NOTE: source_name, source_url and confirmation status (confirmed / reported /
+awaiting official confirmation) are derived deterministically from the source
+hierarchy by the pipeline — do NOT output them.
 
 Output ONLY a strict JSON object with exactly these keys:
 {
@@ -77,6 +84,7 @@ Output ONLY a strict JSON object with exactly these keys:
   "summary": string,
   "facts": string[],
   "market_relevance": string,
+  "trader_takeaway": string,
   "affected_sectors": string[],
   "affected_stocks": string[],
   "impact": "positive|negative|mixed|neutral|unclear",

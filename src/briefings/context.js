@@ -6,13 +6,49 @@
  * templates omit them (nothing is ever fabricated).
  */
 
-/** Ranked recent events → development lines: "Headline (Source)" capped. */
+import { statusShort } from '../telegram/format.js';
+
+/**
+ * Ranked recent events → development blocks capped.
+ *
+ * `t` (legacy "Headline (Source)" string) is kept for existing consumers; the
+ * extra fields are purely presentational so the templates can render a source
+ * hyperlink, a confirmation badge, a story slug and — when the analysis
+ * produced one — a "why it matters" line and a view. Nothing is invented:
+ * every field already exists on the stored event.
+ */
 export function developmentsFromEvents(events = [], cap = 5) {
-  return rankEvents(events, cap).map((e) => ({
-    t: `${e.title}${e.source ? ` (${e.source})` : ''}`,
-    headline: e.title,
-    level: e.importance_level,
-  }));
+  return rankEvents(events, cap).map((e) => {
+    const verdict = e.ai_verdict ?? {};
+    const block = {
+      t: `${e.title}${e.source ? ` (${e.source})` : ''}`,
+      headline: e.title,
+      level: e.importance_level,
+      source: e.source ?? null,
+      url: e.url ?? e.canonical_url ?? null,
+      status: statusShort(e),
+      category: e.category ?? null,
+      institutions: e.institutions ?? [],
+      sectors: e.sectors ?? [],
+      companies: e.companies ?? [],
+    };
+    const summary = typeof e.ai_summary === 'string' ? e.ai_summary.trim() : '';
+    if (summary) block.summary = summary;
+    const relevance = typeof verdict.market_relevance === 'string' ? verdict.market_relevance.trim() : '';
+    if (relevance) block.relevance = relevance;
+    const takeaway = typeof verdict.trader_takeaway === 'string' ? verdict.trader_takeaway.trim() : '';
+    if (takeaway) block.takeaway = takeaway;
+    return block;
+  });
+}
+
+/** Best available interpretation across the ranked events (never fabricated). */
+export function viewFromEvents(events = [], cap = 1) {
+  for (const e of rankEvents(events, cap)) {
+    const t = e?.ai_verdict?.trader_takeaway;
+    if (typeof t === 'string' && t.trim()) return t.trim();
+  }
+  return null;
 }
 
 export function rankEvents(events = [], cap = 10) {
@@ -114,14 +150,29 @@ export function buildPreMarketContext({ snapshots = [], events = [], now = new D
   if (gold) ctx.gold = gold;
   if (nifty) ctx.nifty = nifty;
   if (banknifty) ctx.banknifty = banknifty;
+  const preIdx = indexRows(snaps);
+  if (preIdx.length) ctx.indices = preIdx;
 
   const dev = developmentsFromEvents(events, 5);
   if (dev.length) ctx.developments = dev;
   const watch = watchlistFromEvents(events, 6);
   if (watch.length) ctx.watchlist = watch;
   if (keyEvents.length) ctx.keyEvents = keyEvents.slice(0, 6);
+  const view = viewFromEvents(events, 3);
+  if (view) ctx.view = view;
 
   return ctx;
+}
+
+/** Structured index rows ({name, value, pct_change}) for the dashboard blocks. */
+function indexRows(snaps) {
+  return [findSnap(snaps, /^nifty(\s*50)?$/i), findSnap(snaps, /bank\s*nifty|nifty\s*bank/i)]
+    .filter((s) => s && typeof s.value === 'number')
+    .map((s) => ({
+      name: s.name,
+      value: s.value,
+      ...(typeof s.pct_change === 'number' ? { pct_change: s.pct_change } : {}),
+    }));
 }
 
 export function buildClosingContext({ snapshots = [], events = [], now = new Date(), watchNext = [] } = {}) {
@@ -132,6 +183,8 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
   const banknifty = fmtSnap(findSnap(snaps, /bank\s*nifty|nifty\s*bank/i));
   if (nifty) ctx.nifty = nifty;
   if (banknifty) ctx.banknifty = banknifty;
+  const closeIdx = indexRows(snaps);
+  if (closeIdx.length) ctx.indices = closeIdx;
 
   const advances = findSnap(snaps, /advance/i);
   const declines = findSnap(snaps, /decline/i);
@@ -144,9 +197,12 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
     .filter((s) => !/^nifty(\s*50)?$/i.test(s.name) && !/bank/i.test(s.name))
     .sort((a, b) => b.pct_change - a.pct_change);
   if (sectorSnaps.length) {
-    const lines = sectorSnaps.map((s) => `${s.name.replace(/^nifty\s+/i, '').toUpperCase()}: ${fmtSnap(s)}`);
-    ctx.topSectors = lines.slice(0, 6);
-    ctx.weakSectors = [...lines].reverse().slice(0, 6);
+    const asLine = (s) => `${s.name.replace(/^nifty\s+/i, '').toUpperCase()}: ${fmtSnap(s)}`;
+    // Only real gainers under WHAT MOVED and real losers under LAGGARDS —
+    // a mixed board must never label a +1.6% sector as a laggard.
+    ctx.topSectors = sectorSnaps.slice(0, 6).map(asLine);
+    const losers = sectorSnaps.filter((s) => s.pct_change < 0);
+    if (losers.length) ctx.weakSectors = losers.slice().reverse().slice(0, 6).map(asLine);
   }
 
   // Stock movers: named non-index snapshots with pct_change (from market snapshots).
@@ -176,5 +232,7 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
   if (global.length) ctx.global = global;
 
   if (watchNext.length) ctx.watchNext = watchNext.slice(0, 6);
+  const view = viewFromEvents(events, 3);
+  if (view) ctx.view = view;
   return ctx;
 }
