@@ -1,30 +1,32 @@
 import path from 'node:path';
 import { NewsProvider } from './newsProvider.js';
 import { OfficialAnnouncementProvider } from './officialProvider.js';
-import { MarketDataProvider, GlobalMarketProvider } from './marketProviders.js';
+import { NSECollector, GlobalMarketCollector } from './nseCollector.js';
 
 /**
  * Build the standard provider set. All four run independently and
  * failure-isolated via runProviders():
- *   MarketDataProvider | NewsProvider | OfficialAnnouncementProvider | GlobalMarketProvider
+ *   NSECollector | NewsProvider | OfficialAnnouncementProvider | GlobalMarketCollector
+ * 
+ * NOTE: NSECollector and GlobalMarketCollector fetch data directly from APIs
+ * (NSE India, yfinance) WITHOUT requiring OpenCode MCP agents or inbox files.
  */
 export function createProviders({ settings, feeds, officialSources, categorizer, extractor, fetchImpl } = {}) {
-  const inbox = settings.paths.inbox;
   return [
-    new MarketDataProvider({ inboxFile: path.join(inbox, 'market.json') }),
+    new NSECollector(),
     new NewsProvider({ feeds, categorizer, extractor, fetchImpl }),
     new OfficialAnnouncementProvider({
       sources: officialSources,
-      inboxFile: path.join(inbox, 'official.json'),
+      inboxFile: null, // Inbox optional; HTTP feeds from officialSources work natively
       categorizer,
       extractor,
       fetchImpl,
     }),
-    new GlobalMarketProvider({ inboxFile: path.join(inbox, 'global.json') }),
+    new GlobalMarketCollector(),
   ];
 }
 
-export { NewsProvider, OfficialAnnouncementProvider, MarketDataProvider, GlobalMarketProvider };
+export { NewsProvider, OfficialAnnouncementProvider, NSECollector, GlobalMarketCollector };
 export { Provider, runProviders } from './base.js';
 export { parseFeed } from './parseFeed.js';
 export { readInboxFile } from './inbox.js';
