@@ -3,6 +3,7 @@
  *
  *  - DryRunTransport (default): prints the message, sends nothing.
  *  - JsonEmitTransport: emits structured JSON for an external sender.
+ *  - BotApiTransport: official Bot API over HTTP — used in CI (GitHub Actions).
  *  - GramJsTransport: real sending via the existing .mcp-telegram session.
  *
  * Messages are formatted as Telegram HTML (<b>, <i>, <u>, …). MarkdownV2 is NOT
@@ -141,12 +142,96 @@ export class GramJsTransport {
   }
 }
 
+/**
+ * BotApiTransport: stateless delivery over the official Telegram Bot API.
+ * This is the transport for CI (GitHub Actions) — no session file, no local
+ * login, nothing to carry between runs. The bot must be an admin of the target
+ * channel. Content is sent as Telegram HTML (same renderer as GramJsTransport).
+ */
+export class BotApiTransport {
+  constructor({
+    botToken = typeof process !== 'undefined' ? process.env.TELEGRAM_BOT_TOKEN : undefined,
+    chatId,
+    apiBase = 'https://api.telegram.org',
+    logger = null,
+    fetchImpl = globalThis.fetch,
+  } = {}) {
+    this.botToken = botToken;
+    this.chatId = chatId;
+    this.apiBase = String(apiBase).replace(/\/+$/, '');
+    this.logger = logger;
+    this.fetch = fetchImpl;
+    this.name = 'bot-api';
+  }
+
+  async send(text, meta = {}) {
+    if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN not configured');
+    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+    if (typeof this.fetch !== 'function') throw new Error('BotApiTransport requires a global fetch implementation');
+
+    const url = `${this.apiBase}/bot${this.botToken}/sendMessage`;
+    const payload = {
+      chat_id: String(this.chatId),
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    };
+
+    const maxRetries = 3;
+    let lastError;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await this.fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          const code = data?.error_code ?? res.status;
+          const err = new Error(
+            `Telegram Bot API ${code}: ${data?.description ?? `HTTP ${res.status}`}`
+          );
+          // `retry_after` beats exponential backoff for flood limits.
+          err.retryAfterMs = data?.parameters?.retry_after ? data.parameters.retry_after * 1000 : 0;
+          // 4xx (bad chat id, bad HTML…) will fail identically on every attempt;
+          // only flood limits (429), server errors and transport failures are worth retrying.
+          err.retryable = code === 429 || code >= 500 || !data;
+          throw err;
+        }
+        this.logger?.info('TELEGRAM_SEND', `sent to ${this.chatId} (${text.length} chars)`, {
+          message_id: data.result?.message_id ?? null,
+          mode: meta.mode ?? null,
+          category: meta.category ?? null,
+          event_id: meta.event_id ?? null,
+          attempt,
+        });
+        return { message_id: data.result?.message_id ?? null };
+      } catch (err) {
+        lastError = err;
+        if (err.retryable === false) throw err;
+        if (attempt < maxRetries) {
+          const delay = Math.max(err.retryAfterMs ?? 0, backoffDelay(attempt, 1000));
+          this.logger?.warn(
+            'TELEGRAM_SEND',
+            `send failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${err.message}`
+          );
+          await sleep(delay);
+        }
+      }
+    }
+    throw lastError;
+  }
+}
+
 export function createTransport({ mode = 'dry-run', options = {} } = {}) {
   switch (mode) {
     case 'dry-run':
       return new DryRunTransport(options);
     case 'json':
       return new JsonEmitTransport(options);
+    case 'bot':
+      return new BotApiTransport(options);
     case 'gramjs':
       return new GramJsTransport(options);
     default:

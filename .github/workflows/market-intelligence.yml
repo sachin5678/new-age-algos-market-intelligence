@@ -24,7 +24,8 @@ on:
         description: 'Dry run mode (no Telegram send)'
         type: boolean
         required: false
-        default: true
+        # Manual runs are opt-in for real sends; scheduled runs always deliver.
+        default: false
       no_ai:
         description: 'Skip OpenAI analysis'
         type: boolean
@@ -36,7 +37,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: market-intelligence-${{ github.event.inputs.job_type || github.event.schedule }}
+  group: market-intelligence-${{ github.event.inputs.job_type || github.event.schedule || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -44,13 +45,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+      # Scheduled runs always deliver; manual dispatch honours the dry_run input.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
+      NO_AI_FLAG: ${{ github.event.inputs.no_ai == 'true' && '--no-ai' || '' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Bot API transport — stateless, nothing to carry between runs.
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-      TELEGRAM_SESSION_PATH: ${{ secrets.TELEGRAM_SESSION_PATH }}
-      DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
       NODE_ENV: production
 
     steps:
@@ -70,7 +71,7 @@ jobs:
 
       - name: Restore state from cache
         id: restore-state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             state/market.db
@@ -89,23 +90,23 @@ jobs:
 
       - name: Run pre-market briefing
         if: ${{ github.event.schedule == '0 3 * * 1-5' || github.event.inputs.job_type == 'premarket' }}
-        run: node src/index.js --mode premarket --briefing premarket
+        run: node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
 
       - name: Run market check
         if: ${{ github.event.schedule == '*/5 3-10 * * 1-5' || github.event.inputs.job_type == 'market-check' }}
-        run: node src/index.js --mode intraday --job-type market-check
+        run: node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
 
       - name: Run market news
         if: ${{ github.event.inputs.job_type == 'market-news' }}
-        run: node src/index.js --job-type market-news
+        run: node src/index.js --job-type market-news ${{ env.NO_AI_FLAG }}
 
       - name: Run closing briefing
         if: ${{ github.event.schedule == '15 10 * * 1-5' || github.event.inputs.job_type == 'closing' }}
-        run: node src/index.js --mode closing --briefing closing
+        run: node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
 
       - name: Save state to cache
         if: always()
-        uses: actions/cache@v4
+        uses: actions/cache/save@v4
         with:
           path: |
             state/market.db
@@ -125,7 +126,3 @@ jobs:
         if: failure()
         run: |
           echo "::error::Market intelligence job failed - see logs artifact"
-
-concurrency:
-  group: market-intelligence-${{ github.event.inputs.job_type || github.event.schedule }}
-  cancel-in-progress: false

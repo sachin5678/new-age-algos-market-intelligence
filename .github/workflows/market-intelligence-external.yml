@@ -13,13 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      DRY_RUN: ${{ github.event.client_payload.dry_run || 'true' }}
+      # External cron is a production trigger: deliver unless the payload
+      # explicitly asks for a dry run ("dry_run": true in client_payload).
+      DRY_RUN: ${{ github.event.client_payload.dry_run == 'true' && 'true' || 'false' }}
+      NO_AI_FLAG: ${{ github.event.client_payload.no_ai == 'true' && '--no-ai' || '' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Bot API transport — stateless, nothing to carry between runs.
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-      TELEGRAM_SESSION_PATH: ${{ secrets.TELEGRAM_SESSION_PATH }}
-      DRY_RUN: ${{ github.event.client_payload.dry_run || 'true' }}
       NODE_ENV: production
 
     steps:
@@ -39,7 +40,7 @@ jobs:
 
       - name: Restore state from cache
         id: restore-state
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             state/market.db
@@ -56,15 +57,15 @@ jobs:
         run: |
           JOB_TYPE=${{ github.event.action }}
           if [ "$JOB_TYPE" = "market-check" ]; then
-            node src/index.js --mode intraday --job-type market-check
+            node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "premarket" ]; then
-            node src/index.js --mode premarket --briefing premarket
+            node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "closing" ]; then
-            node src/index.js --mode closing --briefing closing
+            node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "health-check" ]; then
             node src/index.js --job-type health-check
           elif [ "$JOB_TYPE" = "market-news" ]; then
-            node src/index.js --job-type market-news
+            node src/index.js --job-type market-news ${{ env.NO_AI_FLAG }}
           else
             echo "Unknown job type: $JOB_TYPE"
             exit 1
@@ -72,7 +73,7 @@ jobs:
 
       - name: Save state to cache
         if: always()
-        uses: actions/cache@v4
+        uses: actions/cache/save@v4
         with:
           path: |
             state/market.db

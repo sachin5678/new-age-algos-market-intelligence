@@ -34,8 +34,8 @@ Options:
   -h, --help           Show this help
 
 Env: DRY_RUN, OPENAI_API_KEY, OPENAI_API_KEY_FILE,
-     TELEGRAM_CHAT_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH,
-     EVENT_POLL_INTERVAL_MINUTES, MAX_ALERTS_PER_HOUR
+     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH,
+     TELEGRAM_SESSION_PATH, EVENT_POLL_INTERVAL_MINUTES, MAX_ALERTS_PER_HOUR
 `;
 
 function parseCli() {
@@ -248,6 +248,23 @@ async function runHealthCheck({ settings, logger }) {
     healthy = false;
   }
 
+  // Telegram delivery readiness: Bot API (CI) vs local GramJS session
+  try {
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (!chatId) {
+      checks.push({ name: 'telegram:delivery', status: 'fail', message: 'TELEGRAM_CHAT_ID not set' });
+      healthy = false;
+    } else if (botToken) {
+      checks.push({ name: 'telegram:delivery', status: 'ok', message: `bot-api → chat ${chatId}` });
+    } else {
+      checks.push({ name: 'telegram:delivery', status: 'ok', message: `gramjs-session → chat ${chatId}` });
+    }
+  } catch (err) {
+    checks.push({ name: 'telegram:delivery', status: 'fail', message: `Delivery config error: ${err.message}` });
+    healthy = false;
+  }
+
   // Output results
   const output = {
     timestamp: new Date().toISOString(),
@@ -308,11 +325,14 @@ async function main() {
     const importanceEngine = createImportanceEngine(importance);
     const sourceRegistry = createSourceRegistry(sources);
     const ai = createOpenAIService({ settings, sources, logger });
+    // Bot API when a token is available (CI), GramJS session otherwise (local).
+    const liveTransport = process.env.TELEGRAM_BOT_TOKEN ? 'bot' : 'gramjs';
     const transport = createTransport({
-      mode: settings.dryRun ? 'dry-run' : 'gramjs',
+      mode: settings.dryRun ? 'dry-run' : liveTransport,
       options: {
         logger,
         chatId: process.env.TELEGRAM_CHAT_ID ?? null,
+        botToken: process.env.TELEGRAM_BOT_TOKEN ?? null,
         apiId: process.env.TELEGRAM_API_ID ?? '20412495',
         apiHash: process.env.TELEGRAM_API_HASH ?? 'b8843afdbd2790efd99744c20e8f4f77',
         sessionPath: process.env.TELEGRAM_SESSION_PATH ?? null,
