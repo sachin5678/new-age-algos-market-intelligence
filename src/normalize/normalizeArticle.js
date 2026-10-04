@@ -4,14 +4,33 @@ const NAMED_ENTITIES = {
   rdquo: '”', ldquo: '“', ndash: '–', mdash: '—', hellip: '…', rsquo: '’',
 };
 
+/**
+ * Repair ORPHANED numeric entities — publishers (e.g. Moneycontrol RSS) ship
+ * titles like `Cyient DLM#39;s` where the leading `&` was already lost upstream,
+ * so no decoder can find them. Only `&`-less `#39;` / `#x27;` forms are touched;
+ * real `&#39;` is left to the normal passes. Control/unassigned code points are
+ * skipped so a stray `#1;` in a headline can never become a control character.
+ */
+function repairOrphanEntities(s) {
+  return s.replace(/(^|[^&#])#(x[0-9a-f]+|\d+);/gi, (m, pre, body) => {
+    const code = body[0].toLowerCase() === 'x' ? parseInt(body.slice(1), 16) : parseInt(body, 10);
+    // Skip controls (C0/C1) and unassigned-looking high values; keep printable text.
+    const isControl = code < 32 || (code >= 127 && code <= 159);
+    if (!Number.isFinite(code) || isControl || code > 0x2fff) return m;
+    return pre + String.fromCodePoint(code);
+  });
+}
+
 export function decodeEntities(text = '') {
   // Iterate to a fixed point: "&amp;#39;" needs two passes to become "'".
   let out = String(text);
   for (let i = 0; i < 3; i += 1) {
-    const next = out
-      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-      .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-      .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m);
+    const next = repairOrphanEntities(
+      out
+        .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+        .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m)
+    );
     if (next === out) break;
     out = next;
   }

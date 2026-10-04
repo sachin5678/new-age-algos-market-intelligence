@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { formatAlert, statusLine, chunkMessage } from '../src/telegram/format.js';
-import { escapeMarkdownV2 } from '../src/telegram/transport.js';
+import { escapeHtml } from '../src/telegram/transport.js';
 
 const verdict = {
   event_type: 'regulatory',
@@ -30,26 +30,33 @@ const event = {
   importance_level: 'HIGH',
 };
 
-test('escapeMarkdownV2 neutralises Telegram MarkdownV2 metacharacters', () => {
-  assert.equal(escapeMarkdownV2('<b> & "x"'), '\\<b\\> & "x"');
+test('escapeHtml neutralises Telegram HTML metacharacters', () => {
+  assert.equal(escapeHtml('<b> & "x"'), '&lt;b&gt; &amp; "x"');
 });
 
-test('formatAlert matches the New Age Algos wire format (MarkdownV2)', () => {
+test('escapeHtml decodes residual entities before escaping (no &#39; leaks)', () => {
+  assert.equal(escapeHtml('DLM&#39;s profit'), "DLM's profit");
+  // &amp; round-trips: decode → & then re-escape for HTML safety.
+  assert.equal(escapeHtml('A &amp; B'), 'A &amp; B');
+  assert.equal(escapeHtml('A & B'), 'A &amp; B');
+});
+
+test('formatAlert matches the New Age Algos wire format (Telegram HTML)', () => {
   const text = formatAlert(event, verdict);
   const lines = text.split('\n');
 
-  assert.equal(lines[0], '🚨 *MARKET ALERT*');
-  assert.ok(text.includes(escapeMarkdownV2(verdict.headline)));
-  assert.ok(text.includes(escapeMarkdownV2(verdict.summary)));
-  assert.ok(text.includes('📌 *Market relevance:*'));
-  assert.ok(text.includes('🏭 *Sectors:*'));
+  assert.equal(lines[0], '🚨 <b>MARKET ALERT</b>');
+  assert.ok(text.includes(`<b><u>${escapeHtml(verdict.headline)}</u></b>`));
+  assert.ok(text.includes(escapeHtml(verdict.summary)));
+  assert.ok(text.includes('<b>📌 Market relevance:</b>'));
+  assert.ok(text.includes('<b>🏭 Sectors:</b>'));
   assert.ok(text.includes('BANKING'));
-  assert.ok(text.includes('📊 *Stocks potentially affected:*'));
+  assert.ok(text.includes('<b>📊 Stocks potentially affected:</b>'));
   assert.ok(text.includes('RELIANCE'));
-  assert.ok(text.includes('🔎 *Source:*'));
+  assert.ok(text.includes('<b>🔎 Source:</b>'));
   assert.ok(text.includes('Moneycontrol'));
-  assert.ok(text.includes('⚠️ *Status:*'));
-  assert.ok(text.trimEnd().endsWith('\\- New Age Algos'), 'brand footer missing');
+  assert.ok(text.includes('<b>⚠️ Status:</b>'));
+  assert.ok(text.trimEnd().endsWith('<i>— New Age Algos</i>'), 'brand footer missing');
 });
 
 test('formatAlert never leaks raw scores or classification internals', () => {
@@ -65,8 +72,8 @@ test('formatAlert omits unsupported sectors/stocks sections entirely', () => {
     { ...event, sectors: [] },
     { headline: 'Story', summary: 'Sum.', affected_sectors: [], affected_stocks: [] }
   );
-  assert.ok(!text.includes('🏭 *Sectors:*'), 'empty sectors section must be omitted');
-  assert.ok(!text.includes('📊 *Stocks potentially affected:*'), 'unsupported stocks must be omitted');
+  assert.ok(!text.includes('🏭 Sectors'), 'empty sectors section must be omitted');
+  assert.ok(!text.includes('Stocks potentially affected'), 'unsupported stocks must be omitted');
 });
 
 test('statusLine follows the source hierarchy', () => {
@@ -88,7 +95,8 @@ test('formatAlert escapes injected HTML in headline and summary', () => {
   });
   assert.ok(!text.includes('<script>'));
   assert.ok(!text.includes('<b>bold?</b>'));
-  assert.ok(text.includes('<script\\>'));
+  assert.ok(text.includes('&lt;script&gt;'));
+  assert.ok(text.includes('&lt;b&gt;bold?&lt;/b&gt;'));
 });
 
 function evilEvent() {
@@ -102,7 +110,7 @@ test('fallback verdict (facts, no summary) still renders a summary line', () => 
     affected_sectors: [],
     affected_stocks: [],
   });
-  assert.ok(text.includes('Fact one\\. Fact two\\.'));
+  assert.ok(text.includes('Fact one. Fact two.'));
 });
 
 test('chunkMessage respects the 4096-char Telegram limit', () => {
@@ -116,4 +124,21 @@ test('chunkMessage respects the 4096-char Telegram limit', () => {
   assert.equal(chunks.join('').replace(/\s+/g, ''), big.replace(/\s+/g, ''), 'content lost while chunking');
 
   assert.deepEqual(chunkMessage('short', 4096), ['short']);
+});
+
+test('chunkMessage balances HTML tags across split points', () => {
+  const para = '<b>Bold market context that keeps going and going. </b>'.repeat(40);
+  const big = Array(6).fill(para).join('\n\n');
+  assert.ok(big.length > 4096);
+
+  const chunks = chunkMessage(big, 4096);
+  assert.ok(chunks.length >= 2);
+  for (const c of chunks) {
+    const opens = [...c.matchAll(/<b>/g)].length;
+    const closes = [...c.matchAll(/<\/b>/g)].length;
+    assert.equal(opens, closes, `unbalanced <b> in chunk: ${c.slice(0, 60)}…`);
+  }
+  // Every chunk after the first reopens the carried tag so bold survives.
+  assert.ok(chunks[0].includes('<b>'));
+  assert.ok(chunks[chunks.length - 1].includes('</b>'));
 });

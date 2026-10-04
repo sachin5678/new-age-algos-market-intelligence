@@ -4,7 +4,13 @@
  *  - DryRunTransport (default): prints the message, sends nothing.
  *  - JsonEmitTransport: emits structured JSON for an external sender.
  *  - GramJsTransport: real sending via the existing .mcp-telegram session.
+ *
+ * Messages are formatted as Telegram HTML (<b>, <i>, <u>, …). MarkdownV2 is NOT
+ * used: gramjs' MarkdownV2 parser ignores backslash escapes and mangles hyphens,
+ * so `\(x\)` / `\-` rendered literally in the delivered message.
  */
+
+import { decodeEntities } from '../normalize/normalizeArticle.js';
 
 export class DryRunTransport {
   constructor({ logger = null, out = process.stdout } = {}) {
@@ -15,7 +21,9 @@ export class DryRunTransport {
 
   async send(text, meta = {}) {
     this.logger?.info('TELEGRAM_SEND', `DRY_RUN — not sent (${text.length} chars)`, { mode: meta.mode ?? null });
-    this.out.write(`\n---------- TELEGRAM MESSAGE (DRY RUN — nothing sent) ----------\n${text}\n--------------------------------------------------------------\n`);
+    // Show the reader what Telegram will render: strip tags, restore entities.
+    const rendered = decodeEntities(String(text).replace(/<[^>]+>/g, ''));
+    this.out.write(`\n---------- TELEGRAM MESSAGE (DRY RUN — nothing sent) ----------\n${rendered}\n--------------------------------------------------------------\n`);
     return { message_id: null, dry_run: true };
   }
 }
@@ -45,12 +53,15 @@ function backoffDelay(attempt, baseMs = 1000) {
 }
 
 /**
- * Escape text for Telegram MarkdownV2.
- * Must escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
+ * Escape a value for safe embedding in a Telegram HTML message.
+ * Decodes residual HTML entities first (stale rows may still contain `&#39;`),
+ * then escapes `&`, `<`, `>` so injected markup can never become real tags.
  */
-export function escapeMarkdownV2(text = '') {
-  return String(text)
-    .replace(/([_*[\]()~`#+=\-|{}.!><])/g, '\\$1');
+export function escapeHtml(text = '') {
+  return decodeEntities(String(text))
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
@@ -99,7 +110,9 @@ export class GramJsTransport {
 
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const sent = await client.sendMessage(this.chatId, { message: text, parseMode: 'markdownv2' });
+          // Telegram HTML (not MarkdownV2): gramjs' MarkdownV2 parser ignores
+          // backslash escapes, so `\(x\)` / `\-` were delivered literally.
+          const sent = await client.sendMessage(this.chatId, { message: text, parseMode: 'html' });
           this.logger?.info('TELEGRAM_SEND', `sent to ${this.chatId} (${text.length} chars)`, {
             message_id: sent?.id ?? null,
             mode: meta.mode ?? null,

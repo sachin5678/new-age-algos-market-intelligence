@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { testConfig } from './helpers.js';
 import { createCategorizer } from '../src/normalize/categorize.js';
 import { createEntityExtractor } from '../src/normalize/extractEntities.js';
-import { normalizeArticle } from '../src/normalize/normalizeArticle.js';
+import { decodeEntities, normalizeArticle } from '../src/normalize/normalizeArticle.js';
 import { parseFeed } from '../src/providers/parseFeed.js';
 
 const cfg = testConfig();
@@ -115,4 +115,25 @@ test('entity decoding iterates to a fixed point (nested entities)', () => {
     {}
   );
   assert.equal(b.title, 'Double-escaped & sign & other');
+});
+
+test('orphaned numeric entities from broken publishers are repaired', () => {
+  // Moneycontrol RSS ships titles with the leading `&` already stripped:
+  //   <title>Cyient DLM#39;s profit after tax in FY24 surges 93%</title>
+  const a = normalizeArticle(
+    { title: "Cyient DLM#39;s profit after tax &amp; more", url: 'https://x.test/orphan' },
+    {}
+  );
+  assert.equal(a.title, "Cyient DLM's profit after tax & more");
+
+  const b = normalizeArticle(
+    { title: "Razorpay announces #39;UPI Switch#39; with Airtel#39;s bank", url: 'https://x.test/orphan2' },
+    {}
+  );
+  assert.equal(b.title, "Razorpay announces 'UPI Switch' with Airtel's bank");
+
+  // Control code points are never materialised from a stray `#N;`.
+  assert.equal(decodeEntities('keep #1; and #150; literal'), 'keep #1; and #150; literal');
+  // Real entities keep working after the orphan pass is added.
+  assert.equal(decodeEntities('A &amp; B &#39;x&#39; &#x27;y&#x27;'), "A & B 'x' 'y'");
 });

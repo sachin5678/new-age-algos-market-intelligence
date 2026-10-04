@@ -27,25 +27,25 @@ test('pre-market brief renders every populated section in order', () => {
   const text = formatPreMarket(fullPre);
   const lines = text.split('\n');
 
-  assert.equal(lines[0], '🌅 *NEW AGE ALGOS*');
-  assert.equal(lines[1], '*PRE\\-MARKET BRIEF*');
-  assert.equal(lines[2], '05 Oct 2026');
+  assert.equal(lines[0], '🌅 <b>NEW AGE ALGOS</b>');
+  assert.equal(lines[1], '<b>PRE-MARKET BRIEF</b>');
+  assert.equal(lines[2], '<i>05 Oct 2026</i>');
 
   const order = [
-    '🌍 *GLOBAL CUES*',
-    '🇺🇸 *US:*',
-    '🇯🇵 / 🇭🇰 / 🇨🇳 *ASIA:*',
-    '💱 *USD/INR:*',
-    '🛢️ *CRUDE:*',
-    '🥇 *GOLD:*',
-    '📊 *INDIAN MARKET SETUP*',
-    'NIFTY:',
-    'BANKNIFTY:',
-    '🔥 *TOP DEVELOPMENTS*',
-    '1. SEBI tightens F&O rules \\(Reuters\\)',
-    '🏭 *STOCKS / SECTORS TO WATCH*',
+    '<b>🌍 GLOBAL CUES</b>',
+    '<b>🇺🇸 US:</b>',
+    '<b>🇯🇵 / 🇭🇰 / 🇨🇳 ASIA:</b>',
+    '<b>💱 USD/INR:</b>',
+    '<b>🛢️ CRUDE:</b>',
+    '<b>🥇 GOLD:</b>',
+    '<b>📊 INDIAN MARKET SETUP</b>',
+    '<b>NIFTY:</b>',
+    '<b>BANKNIFTY:</b>',
+    '<b>🔥 TOP DEVELOPMENTS</b>',
+    '1. SEBI tightens F&amp;O rules (Reuters)',
+    '<b>🏭 STOCKS / SECTORS TO WATCH</b>',
     '• RELIANCE',
-    "⚠️ *TODAY'S KEY EVENTS*",
+    "<b>⚠️ TODAY'S KEY EVENTS</b>",
     '• 10:00 AM — India services PMI',
   ];
   let last = -1;
@@ -55,7 +55,9 @@ test('pre-market brief renders every populated section in order', () => {
     last = idx;
   }
 
-  assert.ok(text.trimEnd().endsWith('Data\\-driven | Systematic | Transparent'));
+  assert.ok(text.trimEnd().endsWith('<i>Data-driven | Systematic | Transparent</i>'));
+  // No MarkdownV2 escape residue must ever reach the reader.
+  assert.ok(!/\\[()\-.|]/.test(text), 'literal backslash escapes leaked into the message');
 });
 
 test('pre-market brief caps developments/watch/key events (no 20+ item dumps)', () => {
@@ -74,13 +76,13 @@ test('pre-market brief caps developments/watch/key events (no 20+ item dumps)', 
 
 test('pre-market brief omits sections with no data (nothing fabricated)', () => {
   const text = formatPreMarket({ date: '05 Oct 2026' });
-  assert.ok(!text.includes('*GLOBAL CUES*'));
-  assert.ok(!text.includes('*INDIAN MARKET SETUP*'));
-  assert.ok(!text.includes('*TOP DEVELOPMENTS*'));
-  assert.ok(!text.includes('*STOCKS / SECTORS TO WATCH*'));
-  assert.ok(!text.includes("*TODAY'S KEY EVENTS*"));
+  assert.ok(!text.includes('GLOBAL CUES'));
+  assert.ok(!text.includes('INDIAN MARKET SETUP'));
+  assert.ok(!text.includes('TOP DEVELOPMENTS'));
+  assert.ok(!text.includes('STOCKS / SECTORS TO WATCH'));
+  assert.ok(!text.includes("TODAY'S KEY EVENTS"));
   assert.ok(text.includes('05 Oct 2026'));
-  assert.ok(text.trimEnd().endsWith('Data\\-driven | Systematic | Transparent'));
+  assert.ok(text.trimEnd().endsWith('<i>Data-driven | Systematic | Transparent</i>'));
 });
 
 const fullClose = {
@@ -101,22 +103,22 @@ const fullClose = {
 
 test('closing brief renders every populated section in order', () => {
   const text = formatClosing(fullClose);
-  assert.equal(text.split('\n')[0], '📊 *NEW AGE ALGOS*');
-  assert.equal(text.split('\n')[1], '*INDIA MARKET CLOSE*');
+  assert.equal(text.split('\n')[0], '📊 <b>NEW AGE ALGOS</b>');
+  assert.equal(text.split('\n')[1], '<b>INDIA MARKET CLOSE</b>');
 
   const order = [
-    'NIFTY:',
-    'BANKNIFTY:',
-    '📈 *MARKET BREADTH*',
-    'Advances: 1204',
-    'Declines: 950',
-    '🏆 *TOP SECTORS*',
-    '📉 *WEAK SECTORS*',
-    '🔥 *KEY STOCK MOVERS*',
-    '📰 *IMPORTANT DEVELOPMENTS*',
-    '💰 *FII / DII*',
-    '🌍 *GLOBAL CUES*',
-    '📅 *TOMORROW TO WATCH*',
+    '<b>NIFTY:</b>',
+    '<b>BANKNIFTY:</b>',
+    '<b>📈 MARKET BREADTH</b>',
+    '<b>Advances:</b> 1204',
+    '<b>Declines:</b> 950',
+    '<b>🏆 TOP SECTORS</b>',
+    '<b>📉 WEAK SECTORS</b>',
+    '<b>🔥 KEY STOCK MOVERS</b>',
+    '<b>📰 IMPORTANT DEVELOPMENTS</b>',
+    '<b>💰 FII / DII</b>',
+    '<b>🌍 GLOBAL CUES</b>',
+    '<b>📅 TOMORROW TO WATCH</b>',
   ];
   let last = -1;
   for (const marker of order) {
@@ -124,16 +126,17 @@ test('closing brief renders every populated section in order', () => {
     assert.ok(idx > last, `marker missing or out of order: ${marker}`);
     last = idx;
   }
-  assert.ok(text.trimEnd().endsWith('Data\\-driven | Systematic | Transparent'));
+  assert.ok(text.trimEnd().endsWith('<i>Data-driven | Systematic | Transparent</i>'));
   assert.ok(!/importance|score/i.test(text), 'internals leaked into closing brief');
+  assert.ok(!/\\[()\-.|]/.test(text), 'literal backslash escapes leaked into the message');
 });
 
 test('closing brief omits empty sections and caps lists', () => {
   const text = formatClosing({ date: '02 Oct 2026', movers: Array.from({ length: 9 }, (_, i) => `S${i}: +${i}%`) });
-  assert.ok(!text.includes('*MARKET BREADTH*'));
-  assert.ok(!text.includes('*TOP SECTORS*'));
-  assert.ok(!text.includes('*FII / DII*'));
-  assert.ok(!text.includes('*TOMORROW TO WATCH*'));
+  assert.ok(!text.includes('MARKET BREADTH'));
+  assert.ok(!text.includes('TOP SECTORS'));
+  assert.ok(!text.includes('FII / DII'));
+  assert.ok(!text.includes('TOMORROW TO WATCH'));
   assert.ok(!text.includes('S5:'), 'movers must cap at 5');
   assert.ok(text.includes('S4:'));
 });
