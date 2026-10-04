@@ -165,8 +165,10 @@ async function runHealthCheck({ settings, logger }) {
   // Check configuration
   checks.push({ name: 'config', status: 'ok', message: 'Configuration loaded' });
 
-  // Check required environment variables
-  const requiredEnv = ['TELEGRAM_CHAT_ID', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH'];
+  // TELEGRAM_CHAT_ID is required for every delivery path. TELEGRAM_API_ID /
+  // TELEGRAM_API_HASH are not: Bot API delivery (CI) never uses them, and the
+  // local GramJS session works off built-in defaults.
+  const requiredEnv = ['TELEGRAM_CHAT_ID'];
   for (const env of requiredEnv) {
     if (!process.env[env]) {
       checks.push({ name: `env:${env}`, status: 'fail', message: `Missing required environment variable: ${env}` });
@@ -175,6 +177,13 @@ async function runHealthCheck({ settings, logger }) {
       checks.push({ name: `env:${env}`, status: 'ok', message: 'Set' });
     }
   }
+  checks.push({
+    name: 'env:telegram-credentials',
+    status: 'ok',
+    message: process.env.TELEGRAM_BOT_TOKEN
+      ? 'Bot API (TELEGRAM_BOT_TOKEN)'
+      : 'GramJS session (built-in api id/hash defaults)',
+  });
 
   // Check OpenAI key if AI enabled
   if (settings.ai.enabled) {
