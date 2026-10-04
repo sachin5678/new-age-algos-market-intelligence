@@ -69,3 +69,5 @@ build/
 
 # TypeScript cache
 *.tsbuildinfo
+# One-off repo ops scripts (no secrets, but not part of the pipeline)
+scripts/gh-*.mjs
