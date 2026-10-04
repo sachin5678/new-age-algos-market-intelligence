@@ -8,8 +8,11 @@
   "scripts": {
     "start": "node src/index.js",
     "intraday": "node src/index.js --mode intraday",
-    "premarket": "node src/index.js --mode premarket",
-    "closing": "node src/index.js --mode closing",
+    "premarket": "node src/index.js --mode premarket --briefing premarket",
+    "closing": "node src/index.js --mode closing --briefing closing",
+    "market-check": "node src/index.js --mode intraday --job-type market-check",
+    "health-check": "node src/index.js --health-check",
+    "market-news": "node src/index.js --mode intraday --job-type market-news",
     "test": "node --test"
   },
   "engines": {

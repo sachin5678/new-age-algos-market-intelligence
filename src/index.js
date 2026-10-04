@@ -22,16 +22,16 @@ const USAGE = `New Age Algos — market intelligence pipeline
 Usage: node src/index.js [options]
 
 Options:
-  --mode <m>       intraday (default) | premarket | closing
-  --poll           Start the intraday polling scheduler (runs every N minutes during market hours)
-  --briefing <b>   Render a scheduled briefing instead of the event pipeline:
-                   premarket | closing (uses snapshots + recent store events)
-  --dry-run        Force DRY_RUN (print message, send nothing)
-  --send           Allow real Telegram delivery (DRY_RUN=false)
-  --no-ai          Skip OpenAI analysis (rules-only verdicts)
-  --json           Machine-readable summary on stdout
-  --memory         Use in-memory store instead of SQLite (testing)
-  -h, --help       Show this help
+  --mode <m>           intraday (default) | premarket | closing
+  --job-type <t>       market-check (default) | market-news | health-check
+  --briefing <b>       Render a scheduled briefing instead of the event pipeline:
+                       premarket | closing (uses snapshots + recent store events)
+  --dry-run            Force DRY_RUN (print message, send nothing)
+  --send               Allow real Telegram delivery (DRY_RUN=false)
+  --no-ai              Skip OpenAI analysis (rules-only verdicts)
+  --json               Machine-readable summary on stdout
+  --memory             Use in-memory store instead of SQLite (testing)
+  -h, --help           Show this help
 
 Env: DRY_RUN, OPENAI_API_KEY, OPENAI_API_KEY_FILE,
      TELEGRAM_CHAT_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH,
@@ -43,6 +43,7 @@ function parseCli() {
     const { values } = parseArgs({
       options: {
         mode: { type: 'string', default: 'intraday' },
+        'job-type': { type: 'string', default: 'market-check' },
         briefing: { type: 'string' },
         poll: { type: 'boolean', default: false },
         'dry-run': { type: 'boolean', default: false },
@@ -154,6 +155,111 @@ function printSummary(summary, settings, mode) {
   process.stdout.write(lines.join('\n') + '\n');
 }
 
+/**
+ * Health check function - verifies all components are working
+ */
+async function runHealthCheck({ settings, logger }) {
+  const checks = [];
+  let healthy = true;
+
+  // Check configuration
+  checks.push({ name: 'config', status: 'ok', message: 'Configuration loaded' });
+
+  // Check required environment variables
+  const requiredEnv = ['TELEGRAM_CHAT_ID', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH'];
+  for (const env of requiredEnv) {
+    if (!process.env[env]) {
+      checks.push({ name: `env:${env}`, status: 'fail', message: `Missing required environment variable: ${env}` });
+      healthy = false;
+    } else {
+      checks.push({ name: `env:${env}`, status: 'ok', message: 'Set' });
+    }
+  }
+
+  // Check OpenAI key if AI enabled
+  if (settings.ai.enabled) {
+    const hasKey = process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE;
+    if (hasKey) {
+      checks.push({ name: 'openai:key', status: 'ok', message: 'API key available' });
+    } else {
+      checks.push({ name: 'openai:key', status: 'warn', message: 'No API key, will use rules-only fallback' });
+    }
+  } else {
+    checks.push({ name: 'openai:key', status: 'skip', message: 'AI disabled in config' });
+  }
+
+  // Test NSE connectivity
+  try {
+    const { NSECollector } = await import('./providers/nseCollector.js');
+    const collector = new NSECollector({ timeoutMs: 10000 });
+    await collector.fetchIndices(null);
+    checks.push({ name: 'nse:api', status: 'ok', message: 'NSE API reachable' });
+  } catch (err) {
+    checks.push({ name: 'nse:api', status: 'fail', message: `NSE API error: ${err.message}` });
+    healthy = false;
+  }
+
+  // Test global market connectivity
+  try {
+    const { GlobalMarketCollector } = await import('./providers/nseCollector.js');
+    const collector = new GlobalMarketCollector({ timeoutMs: 10000 });
+    // Just test that the module loads, don't actually run yfinance in health check
+    checks.push({ name: 'global:collector', status: 'ok', message: 'Global collector module loaded' });
+  } catch (err) {
+    checks.push({ name: 'global:collector', status: 'warn', message: `Global collector warning: ${err.message}` });
+  }
+
+  // Test official sources
+  try {
+    const { OfficialAnnouncementProvider } = await import('./providers/officialProvider.js');
+    const { createCategorizer } = await import('./normalize/categorize.js');
+    const { createEntityExtractor } = await import('./normalize/extractEntities.js');
+    const cfg = await import('./config.js');
+    const config = cfg.loadConfig();
+    const provider = new OfficialAnnouncementProvider({
+      sources: config.officialSources,
+      categorizer: createCategorizer(config.categories),
+      extractor: createEntityExtractor(config.entities),
+    });
+    checks.push({ name: 'official:provider', status: 'ok', message: 'Official provider initialized' });
+  } catch (err) {
+    checks.push({ name: 'official:provider', status: 'warn', message: `Official provider warning: ${err.message}` });
+  }
+
+  // Test state access
+  try {
+    const { openStore } = await import('./store/index.js');
+    const store = openStore({ driver: 'sqlite', dbPath: ':memory:' });
+    store.close();
+    checks.push({ name: 'state:sqlite', status: 'ok', message: 'SQLite store accessible' });
+  } catch (err) {
+    checks.push({ name: 'state:sqlite', status: 'fail', message: `SQLite error: ${err.message}` });
+    healthy = false;
+  }
+
+  // Test Telegram transport (dry-run)
+  try {
+    const { createTransport } = await import('./telegram/transport.js');
+    const transport = createTransport({ mode: 'dry-run' });
+    await transport.send('Health check test');
+    checks.push({ name: 'telegram:transport', status: 'ok', message: 'Dry-run transport working' });
+  } catch (err) {
+    checks.push({ name: 'telegram:transport', status: 'fail', message: `Telegram transport error: ${err.message}` });
+    healthy = false;
+  }
+
+  // Output results
+  const output = {
+    timestamp: new Date().toISOString(),
+    healthy,
+    checks,
+  };
+
+  console.log(JSON.stringify(output, null, 2));
+  process.exitCode = healthy ? 0 : 1;
+  return output;
+}
+
 async function main() {
   const args = parseCli();
   if (args.help) {
@@ -172,6 +278,11 @@ async function main() {
   const mode = args.mode;
   if (!['intraday', 'premarket', 'closing'].includes(mode)) {
     process.stderr.write(`Unknown mode: ${mode}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  const jobType = args['job-type'];
+  if (!['market-check', 'market-news', 'health-check'].includes(jobType)) {
+    process.stderr.write(`Unknown job-type: ${jobType}\n\n${USAGE}`);
     process.exit(2);
   }
   const briefing = args.briefing ?? null;
@@ -226,6 +337,38 @@ async function main() {
       return;
     }
 
+    // ---------------------------------------------------- BRIEFING COMMAND
+    if (briefing) {
+      const summary = await runBriefing({
+        briefing,
+        providers,
+        store,
+        transport,
+        logger,
+        settings,
+        now,
+        runId,
+      });
+      if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+      else printBriefingSummary(summary, settings);
+      return;
+    }
+
+    // ---------------------------------------------------- HEALTH CHECK
+    if (jobType === 'health-check') {
+      await runHealthCheck({ settings, logger });
+      return;
+    }
+
+    // ---------------------------------------------------- MARKET NEWS (fetch only, no publish)
+    if (jobType === 'market-news') {
+      const transport2 = createTransport({ mode: 'dry-run' });
+      const newsProviders = providers.filter((p) => p.kind === 'news');
+      const collected = await runProviders(newsProviders, { logger, mode: 'intraday', now }, logger);
+      logger.info('MARKET_NEWS', `collected ${collected.items.length} articles`);
+      return;
+    }
+
     // ---------------------------------------------------- POLLING MODE
     if (poll) {
       const poller = createPoller({
@@ -271,37 +414,42 @@ async function main() {
       return;
     }
 
-    const summary = await runPipeline({
-      providers,
-      settings,
-      importance: importanceEngine,
-      textOps,
-      categorizer,
-      extractor,
-      store,
-      logger,
-      ai,
-      transport,
-      mode,
-      now,
-      runId,
-      noAi: !settings.ai.enabled,
-      scheduledBriefing: mode !== 'intraday',
-      sourceRegistry,
-    });
+    // ---------------------------------------------------- MARKET CHECK (full pipeline)
+    if (jobType === 'market-check') {
+      const summary = await runPipeline({
+        providers,
+        settings,
+        importance: importanceEngine,
+        textOps,
+        categorizer,
+        extractor,
+        store,
+        logger,
+        ai,
+        transport,
+        mode,
+        now,
+        runId,
+        noAi: !settings.ai.enabled,
+        scheduledBriefing: mode !== 'intraday',
+        sourceRegistry,
+      });
 
-    store.saveRun({
-      run_id: runId,
-      mode,
-      started_at: summary.startedAt,
-      finished_at: summary.finishedAt,
-      status: summary.status,
-      stats: summary.counts,
-      error: null,
-    });
+      store.saveRun({
+        run_id: runId,
+        mode,
+        started_at: summary.startedAt,
+        finished_at: summary.finishedAt,
+        status: summary.status,
+        stats: summary.counts,
+        error: null,
+      });
 
-    if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
-    else printSummary(summary, settings, mode);
+      if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+      else printSummary(summary, settings, mode);
+    } else {
+      logger.info('JOB', `Job type "${jobType}" completed without running pipeline`);
+    }
   } catch (err) {
     logger.error('PIPELINE', `fatal: ${err.message}`, { stack: err.stack });
     try {

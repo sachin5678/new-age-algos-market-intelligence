@@ -1,0 +1,89 @@
+name: Market Intelligence - External Trigger
+
+on:
+  repository_dispatch:
+    types: [market-check, premarket, closing, health-check, market-news]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  market-intelligence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DRY_RUN: ${{ github.event.client_payload.dry_run || 'true' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+      TELEGRAM_SESSION_PATH: ${{ secrets.TELEGRAM_SESSION_PATH }}
+      DRY_RUN: ${{ github.event.client_payload.dry_run || 'true' }}
+      NODE_ENV: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Python and yfinance
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3 python3-pip
+          pip3 install yfinance
+
+      - name: Restore state from cache
+        id: restore-state
+        uses: actions/cache@v4
+        with:
+          path: |
+            state/market.db
+            state/inbox
+            state/logs
+          key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            market-state-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Execute job
+        run: |
+          JOB_TYPE=${{ github.event.action }}
+          if [ "$JOB_TYPE" = "market-check" ]; then
+            node src/index.js --mode intraday --job-type market-check
+          elif [ "$JOB_TYPE" = "premarket" ]; then
+            node src/index.js --mode premarket --briefing premarket
+          elif [ "$JOB_TYPE" = "closing" ]; then
+            node src/index.js --mode closing --briefing closing
+          elif [ "$JOB_TYPE" = "health-check" ]; then
+            node src/index.js --job-type health-check
+          elif [ "$JOB_TYPE" = "market-news" ]; then
+            node src/index.js --job-type market-news
+          else
+            echo "Unknown job type: $JOB_TYPE"
+            exit 1
+          fi
+
+      - name: Save state to cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: |
+            state/market.db
+            state/inbox
+            state/logs
+          key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-intelligence-logs
+          path: state/logs/
+          retention-days: 7
