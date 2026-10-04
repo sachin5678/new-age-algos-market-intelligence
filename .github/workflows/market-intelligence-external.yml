@@ -54,14 +54,16 @@ jobs:
         run: npm ci
 
       - name: Execute job
+        env:
+          VISUAL_PDF: 'false'
         run: |
           JOB_TYPE=${{ github.event.action }}
           if [ "$JOB_TYPE" = "market-check" ]; then
-            node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
+            VISUAL_ALERTS=true node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "premarket" ]; then
-            node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
+            VISUAL_BRIEFING=true node src/index.js --mode premarket --briefing premarket --visual ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "closing" ]; then
-            node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
+            VISUAL_BRIEFING=true node src/index.js --mode closing --briefing closing --visual ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "health-check" ]; then
             node src/index.js --job-type health-check
           elif [ "$JOB_TYPE" = "market-news" ]; then

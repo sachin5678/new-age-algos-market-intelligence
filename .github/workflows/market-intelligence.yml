@@ -90,10 +90,15 @@ jobs:
 
       - name: Run pre-market briefing
         if: ${{ github.event.schedule == '0 3 * * 1-5' || github.event.inputs.job_type == 'premarket' }}
-        run: node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
+        env:
+          VISUAL_BRIEFING: 'true'
+          VISUAL_PDF: 'false'
+        run: node src/index.js --mode premarket --briefing premarket --visual ${{ env.NO_AI_FLAG }}
 
       - name: Run market check
         if: ${{ github.event.schedule == '*/5 3-10 * * 1-5' || github.event.inputs.job_type == 'market-check' }}
+        env:
+          VISUAL_ALERTS: 'true'
         run: node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
 
       - name: Run market news
@@ -102,7 +107,10 @@ jobs:
 
       - name: Run closing briefing
         if: ${{ github.event.schedule == '15 10 * * 1-5' || github.event.inputs.job_type == 'closing' }}
-        run: node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
+        env:
+          VISUAL_BRIEFING: 'true'
+          VISUAL_PDF: 'false'
+        run: node src/index.js --mode closing --briefing closing --visual ${{ env.NO_AI_FLAG }}
 
       - name: Save state to cache
         if: always()
@@ -113,6 +121,14 @@ jobs:
             state/inbox
             state/logs
           key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload visual briefings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-briefings
+          path: artifacts/briefings/
+          retention-days: 7
 
       - name: Upload logs on failure
         if: failure()

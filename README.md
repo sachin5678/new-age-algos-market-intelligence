@@ -74,7 +74,7 @@ one-shot job: collect → detect → format → send → persist state.
 | Secret | Required | Purpose |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | Bot API delivery in CI (stateless — no session file to carry between runs) |
-| `TELEGRAM_CHAT_ID` | yes | Target chat/channel, e.g. `-1004497477393` |
+| `TELEGRAM_CHAT_ID` | yes | Target chat/channel — production uses the main channel `-1003067155583` (@newagealgos) |
 | `OPENAI_API_KEY` | optional | AI classification; without it the pipeline runs rules-only |
 
 The bot must be an **administrator of the channel** with *Post messages* right.
@@ -207,6 +207,86 @@ Preview all five templates with real-looking fixtures (nothing is sent):
 npm run samples        # scripts/print-samples.mjs
 ```
 
-Briefings are built only from available data (snapshots from the inbox + recent
-store events) — missing sections are omitted, never fabricated. Lists are capped
-(5–8 items) so the feed stays concise.
+## Visual Briefing System
+
+In addition to the text templates above, the pipeline can render **deterministic PNG images** for scheduled briefings and breaking alerts — no AI image generation, no paid SaaS, no external services. Pure HTML+CSS → headless Chromium (Puppeteer-core driving system Chrome) → exact pixel output.
+
+**Delivery format: PNG only.** Each image is sent with a single-line caption saying what it is (e.g. `Pre-session summary • 05 October 2026 • 08:30 IST`). The A4 PDF renderer still exists but is off by default (`VISUAL_PDF=true` to opt in) because several PDF viewers drop painted page backgrounds, so the dark theme renders inconsistently.
+
+### Templates
+
+| Template | Dimensions | Trigger | Caption (one line) |
+|---|---|---|---|
+| 🟦 **Pre-Market Intelligence** | 1080 × 1350 | `--mode premarket --briefing premarket --visual` | `Pre-session summary • <date> • <time> IST` |
+| ⬛ **Market Close** | 1080 × 1350 | `--mode closing --briefing closing --visual` | `Market close summary • <date> • <time> IST` |
+| 🟥 **Breaking Market Alert** | 1080 × 1080 | `VISUAL_ALERTS=true` on HIGH-importance events | `Breaking news • <time> IST` |
+
+### What’s in the images
+
+**Pre-Market (1080×1350):**
+- Header: brand, title, weekday + date + time IST (or `MARKET CLOSED • WEEK AHEAD` on holidays)
+- MARKET PULSE: NIFTY 50 / BANK NIFTY / SENSEX with ▲▼ direction
+- GLOBAL CUES: compact 3-col grid (max 3 cues: US equity, Asia, commodities/currency)
+- WHAT MATTERS TODAY: top 3 developments by importance (ranked, headline + 1-line summary + 1-line why-it-matters + source badge)
+- STOCKS / SECTORS TO WATCH: 2-col grid (max 2 each, data-supported reason)
+- KEY CATALYSTS / KEY RISKS: 2-col bullets (derived from present data only)
+- 🎯 NEW AGE ALGOS VIEW: 2–3 sentences (facts vs interpretation separated; omitted if no AI verdict)
+- Footer: tagline, generated timestamp, sources actually used, disclaimer
+
+**Closing (1080×1350):**
+- Header + MARKET PULSE (same indices)
+- MARKET BREADTH + FII/DII (compact cards)
+- TOP GAINERS / TOP LOSERS (2-col, % change)
+- SECTOR PERFORMANCE (chips)
+- WHAT DROVE THE MARKET (1-line headline + summary)
+- KEY DEVELOPMENTS (top 2)
+- TOMORROW'S WATCH (chips)
+- CATALYSTS / RISKS + VIEW + footer
+
+**Alert (1080×1080):**
+- Kicker: 🚨 MARKET ALERT + brand
+- Category chip + status badge (Confirmed/Reported/Awaiting/Unconfirmed) + impact badge
+- Headline + 1-line summary + 1-line why-it-matters
+- Affected stocks/sectors (chips)
+- Source link + timestamp + footer
+
+### Optional A4 PDF (off by default)
+
+4 pages, selectable text, clickable links — pre-market/closing only (not alerts). Enable with `VISUAL_PDF=true`:
+
+1. **Executive Summary** — view + market pulse + top 3 headlines
+2. **Market & Global Cues** — full indices table + breadth/flows (closing) + global cues table
+3. **Top Developments** — full stories with clickable source links + key driver (closing)
+4. **Stocks/Sectors/Risks/View/Sources** — tables + bullets + source list + disclaimer
+
+Not used in production: PNG is the delivery format because PDF viewers disagree about painting dark page backgrounds.
+
+### Local commands
+
+```bash
+npm run render:premarket   → artifacts/preview/premarket.png + .pdf
+npm run render:closing     → artifacts/preview/closing.png + .pdf
+npm run render:alert       → artifacts/preview/alert.png
+npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints JSON, no send
+```
+
+### Production behaviour (GitHub Actions)
+
+- `VISUAL_BRIEFING=true` on pre-market/closing scheduled steps (`VISUAL_PDF` stays `false` — PNG only)
+- `VISUAL_ALERTS=true` on intraday market-check step
+- Target chat comes from the `TELEGRAM_CHAT_ID` secret — production points at the main channel **@newagealgos** (`-1003067155583`); the bot must be an admin with *Post messages*
+- Artifacts uploaded as `visual-briefings` (7-day retention)
+- Render failure → logged, falls back to text briefing, never sends broken image
+- No browser install needed — ubuntu-latest runners ship Google Chrome
+- No secrets exposed; Bot API transport only
+
+### Design guarantees
+
+- **Deterministic rendering** — same data → byte-identical PNG (verified by QA gate)
+- **Exact dimensions** — 1080×1350 / 1080×1080 (configurable via `VISUAL_WIDTH`/`VISUAL_HEIGHT`)
+- **QA gate before send** — file exists, non-empty, correct dimensions, no `undefined`/`null`/`[object Object]`/`NaN` in visible text, no duplicate stories, no fabricated URLs
+- **Performance** — PNG < 10s, PDF < 15s (typical 2.5–3.5s)
+- **Font embedding** — Inter (400/500/600/700) as base64 woff2 in CSS; zero network at render time
+- **No AI visuals** — AI generates structured content only; the visual is pure code
+- **Missing data = N/A** — never hallucinated prices/percentages/sources/URLs/dates
+- **Confirmation labels** from source hierarchy only: Confirmed / Reported / Awaiting official confirmation / Unconfirmed

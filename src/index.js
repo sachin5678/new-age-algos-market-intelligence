@@ -18,6 +18,7 @@ import { buildPreMarketContext, buildClosingContext } from './briefings/context.
 import { formatPreMarket, formatClosing } from './telegram/briefings.js';
 import { chunkMessage } from './telegram/format.js';
 import { labelChunks } from './telegram/theme.js';
+import { VisualDeliver } from './visual/deliver.js';
 
 const USAGE = `New Age Algos — market intelligence pipeline
 
@@ -28,6 +29,7 @@ Options:
   --job-type <t>       market-check (default) | market-news | health-check
   --briefing <b>       Render a scheduled briefing instead of the event pipeline:
                        premarket | closing (uses snapshots + recent store events)
+  --visual             Generate and send visual briefing (PNG + optional PDF)
   --dry-run            Force DRY_RUN (print message, send nothing)
   --send               Allow real Telegram delivery (DRY_RUN=false)
   --no-ai              Skip OpenAI analysis (rules-only verdicts)
@@ -37,7 +39,8 @@ Options:
 
 Env: DRY_RUN, OPENAI_API_KEY, OPENAI_API_KEY_FILE,
      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH,
-     TELEGRAM_SESSION_PATH, EVENT_POLL_INTERVAL_MINUTES, MAX_ALERTS_PER_HOUR
+     TELEGRAM_SESSION_PATH, EVENT_POLL_INTERVAL_MINUTES, MAX_ALERTS_PER_HOUR,
+     VISUAL_BRIEFING, VISUAL_PDF, VISUAL_ALERTS
 `;
 
 function parseCli() {
@@ -47,6 +50,7 @@ function parseCli() {
         mode: { type: 'string', default: 'intraday' },
         'job-type': { type: 'string', default: 'market-check' },
         briefing: { type: 'string' },
+        visual: { type: 'boolean', default: false },
         poll: { type: 'boolean', default: false },
         'dry-run': { type: 'boolean', default: false },
         send: { type: 'boolean', default: false },
@@ -69,7 +73,7 @@ function parseCli() {
  * store, assemble context, render the template, deliver through the transport.
  * Missing data → sections omitted (never fabricated).
  */
-async function runBriefing({ briefing, providers, store, transport, logger, settings, now, runId }) {
+async function runBriefing({ briefing, providers, store, transport, logger, settings, now, runId, visual = false, visualDeliver = null }) {
   const startedAt = now.toISOString();
   const kind = briefing;
 
@@ -83,28 +87,48 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   const since = new Date(now.getTime() - hours * 3600 * 1000).toISOString();
   const events = store.listRecentEvents(since, 40);
 
-  const ctx = kind === 'premarket'
-    ? buildPreMarketContext({ snapshots, events, now })
-    : buildClosingContext({ snapshots, events, now });
-  const text = kind === 'premarket' ? formatPreMarket(ctx, { now }) : formatClosing(ctx, { now });
-
+  let visualResult = { visual: false };
+  let text = '';
   let sent = false;
   let sendError = null;
-  try {
-    // Briefings are budget-fitted, so a split is rare; label parts if it happens.
-    for (const chunk of labelChunks(chunkMessage(text, 4096))) {
-      await transport.send(chunk, { mode: kind, category: 'BRIEFING', event_id: runId });
+
+  // If visual enabled, render and send image (+ optional PDF)
+  if (visual && visualDeliver) {
+    try {
+      visualResult = await visualDeliver.sendBriefing({ type: kind, snapshots, events, now, runId });
+      if (visualResult.visual) {
+        sent = true;
+      }
+    } catch (err) {
+      logger.error('VISUAL', `Visual briefing failed, falling back to text: ${err.message}`);
     }
-    sent = true;
-  } catch (err) {
-    sendError = err.message;
-    logger.error('TELEGRAM_SEND', `briefing send failed: ${err.message}`);
+  }
+
+  // Fallback to text briefing if visual not enabled or failed
+  if (!sent) {
+    const ctx = kind === 'premarket'
+      ? buildPreMarketContext({ snapshots, events, now })
+      : buildClosingContext({ snapshots, events, now });
+    text = kind === 'premarket' ? formatPreMarket(ctx, { now }) : formatClosing(ctx, { now });
+
+    try {
+      for (const chunk of labelChunks(chunkMessage(text, 4096))) {
+        await transport.send(chunk, { mode: kind, category: 'BRIEFING', event_id: runId });
+      }
+      sent = true;
+    } catch (err) {
+      sendError = err.message;
+      logger.error('TELEGRAM_SEND', `briefing send failed: ${err.message}`);
+    }
   }
 
   const summary = {
     runId,
     kind,
     dryRun: Boolean(settings.dryRun),
+    visual: visualResult.visual,
+    pngPath: visualResult.pngPath ?? null,
+    pdfPath: visualResult.pdfPath ?? null,
     snapshots: snapshots.length,
     eventsConsidered: events.length,
     messageLength: text.length,
@@ -326,6 +350,11 @@ async function main() {
     process.stderr.write(`--poll only works with --mode intraday (default)\n\n${USAGE}`);
     process.exit(2);
   }
+  const visual = Boolean(args.visual);
+  if (visual && !briefing) {
+    process.stderr.write(`--visual only works with --briefing premarket|closing\n\n${USAGE}`);
+    process.exit(2);
+  }
 
   const now = new Date();
   const runId = `${mode}_${now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
@@ -356,6 +385,7 @@ async function main() {
 
     // ---------------------------------------------------- BRIEFING COMMAND
     if (briefing) {
+      const visualDeliver = new VisualDeliver({ transport, logger, settings, enabled: visual });
       const summary = await runBriefing({
         briefing,
         providers,
@@ -365,23 +395,8 @@ async function main() {
         settings,
         now,
         runId,
-      });
-      if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
-      else printBriefingSummary(summary, settings);
-      return;
-    }
-
-    // ---------------------------------------------------- BRIEFING COMMAND
-    if (briefing) {
-      const summary = await runBriefing({
-        briefing,
-        providers,
-        store,
-        transport,
-        logger,
-        settings,
-        now,
-        runId,
+        visual,
+        visualDeliver,
       });
       if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
       else printBriefingSummary(summary, settings);

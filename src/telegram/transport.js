@@ -27,6 +27,18 @@ export class DryRunTransport {
     this.out.write(`\n---------- TELEGRAM MESSAGE (DRY RUN — nothing sent) ----------\n${rendered}\n--------------------------------------------------------------\n`);
     return { message_id: null, dry_run: true };
   }
+
+  async sendPhoto(filePath, caption = '', meta = {}) {
+    this.logger?.info('TELEGRAM_SEND_PHOTO', `DRY_RUN — photo not sent: ${filePath}`, { caption: caption.length, mode: meta.mode ?? null });
+    this.out.write(`\n---------- TELEGRAM PHOTO (DRY RUN) ----------\nFile: ${filePath}\nCaption: ${caption}\n----------------------------------------------\n`);
+    return { message_id: null, dry_run: true };
+  }
+
+  async sendDocument(filePath, caption = '', meta = {}) {
+    this.logger?.info('TELEGRAM_SEND_DOC', `DRY_RUN — document not sent: ${filePath}`, { caption: caption.length, mode: meta.mode ?? null });
+    this.out.write(`\n---------- TELEGRAM DOCUMENT (DRY RUN) ----------\nFile: ${filePath}\nCaption: ${caption}\n--------------------------------------------------\n`);
+    return { message_id: null, dry_run: true };
+  }
 }
 
 export class JsonEmitTransport {
@@ -37,6 +49,16 @@ export class JsonEmitTransport {
 
   async send(text, meta = {}) {
     this.out.write(JSON.stringify({ type: 'telegram_outbox', text, ...meta }) + '\n');
+    return { message_id: null, emitted: true };
+  }
+
+  async sendPhoto(filePath, caption = '', meta = {}) {
+    this.out.write(JSON.stringify({ type: 'telegram_photo', filePath, caption, ...meta }) + '\n');
+    return { message_id: null, emitted: true };
+  }
+
+  async sendDocument(filePath, caption = '', meta = {}) {
+    this.out.write(JSON.stringify({ type: 'telegram_document', filePath, caption, ...meta }) + '\n');
     return { message_id: null, emitted: true };
   }
 }
@@ -55,12 +77,12 @@ function backoffDelay(attempt, baseMs = 1000) {
 
 /**
  * Escape a value for safe embedding in a Telegram HTML message.
- * Decodes residual HTML entities first (stale rows may still contain `&#39;`),
- * then escapes `&`, `<`, `>` so injected markup can never become real tags.
+ * Decodes residual HTML entities first (stale rows may still contain `'`),
+ * then escapes `&`, `<`, `>`, `"` so injected markup can never become real tags.
  */
 export function escapeHtml(text = '') {
   return decodeEntities(String(text))
-    .replace(/&/g, '&amp;')
+    .replace(/&/g, '&' + 'amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 }
@@ -140,6 +162,19 @@ export class GramJsTransport {
       process.chdir(cwd);
     }
   }
+
+  async sendPhoto(filePath, caption = '', meta = {}) {
+    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+    // For gramjs, we'd need to upload the file first - not implemented for now
+    this.logger?.warn('TELEGRAM_SEND_PHOTO', 'GramJsTransport photo upload not implemented, falling back to text');
+    return this.send(caption, meta);
+  }
+
+  async sendDocument(filePath, caption = '', meta = {}) {
+    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+    this.logger?.warn('TELEGRAM_SEND_DOC', 'GramJsTransport document upload not implemented, falling back to text');
+    return this.send(caption, meta);
+  }
 }
 
 /**
@@ -162,6 +197,45 @@ export class BotApiTransport {
     this.logger = logger;
     this.fetch = fetchImpl;
     this.name = 'bot-api';
+  }
+
+  async _postMultipart(endpoint, formData, meta = {}) {
+    const url = `${this.apiBase}/bot${this.botToken}/${endpoint}`;
+    const maxRetries = 3;
+    let lastError;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await this.fetch(url, {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data?.ok) {
+          const code = data?.error_code ?? res.status;
+          const err = new Error(`Telegram Bot API ${code}: ${data?.description ?? `HTTP ${res.status}`}`);
+          err.retryAfterMs = data?.parameters?.retry_after ? data.parameters.retry_after * 1000 : 0;
+          err.retryable = code === 429 || code >= 500 || !data;
+          throw err;
+        }
+        this.logger?.info(`TELEGRAM_SEND_${endpoint.toUpperCase()}`, `sent to ${this.chatId}`, {
+          message_id: data.result?.message_id ?? null,
+          mode: meta.mode ?? null,
+          category: meta.category ?? null,
+          event_id: meta.event_id ?? null,
+          attempt,
+        });
+        return { message_id: data.result?.message_id ?? null };
+      } catch (err) {
+        lastError = err;
+        if (err.retryable === false) throw err;
+        if (attempt < maxRetries) {
+          const delay = Math.max(err.retryAfterMs ?? 0, backoffDelay(attempt, 1000));
+          this.logger?.warn(`TELEGRAM_SEND_${endpoint.toUpperCase()}`, `send failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${delay}ms: ${err.message}`);
+          await sleep(delay);
+        }
+      }
+    }
+    throw lastError;
   }
 
   async send(text, meta = {}) {
@@ -221,6 +295,32 @@ export class BotApiTransport {
       }
     }
     throw lastError;
+  }
+
+  async sendPhoto(filePath, caption = '', meta = {}) {
+    if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN not configured');
+    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+    const fs = await import('node:fs');
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('chat_id', String(this.chatId));
+    if (caption) form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    form.append('photo', fs.createReadStream(filePath));
+    return this._postMultipart('sendPhoto', form, meta);
+  }
+
+  async sendDocument(filePath, caption = '', meta = {}) {
+    if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN not configured');
+    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+    const fs = await import('node:fs');
+    const FormData = (await import('form-data')).default;
+    const form = new FormData();
+    form.append('chat_id', String(this.chatId));
+    if (caption) form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    form.append('document', fs.createReadStream(filePath));
+    return this._postMultipart('sendDocument', form, meta);
   }
 }
 
