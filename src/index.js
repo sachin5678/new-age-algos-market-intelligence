@@ -1,0 +1,330 @@
+#!/usr/bin/env node
+import { parseArgs } from 'node:util';
+import { loadConfig } from './config.js';
+import { createLogger } from './log/logger.js';
+import { openStore } from './store/index.js';
+import { createCategorizer } from './normalize/categorize.js';
+import { createEntityExtractor } from './normalize/extractEntities.js';
+import { createTextOps } from './dedupe/text.js';
+import { createImportanceEngine } from './importance/classify.js';
+import { createOpenAIService } from './ai/openaiService.js';
+import { createTransport } from './telegram/transport.js';
+import { createProviders } from './providers/index.js';
+import { runProviders } from './providers/base.js';
+import { runPipeline } from './pipeline.js';
+import { createPoller } from './scheduler/index.js';
+import { createSourceRegistry } from './normalize/sources.js';
+import { buildPreMarketContext, buildClosingContext } from './briefings/context.js';
+import { formatPreMarket, formatClosing } from './telegram/briefings.js';
+
+const USAGE = `New Age Algos — market intelligence pipeline
+
+Usage: node src/index.js [options]
+
+Options:
+  --mode <m>       intraday (default) | premarket | closing
+  --poll           Start the intraday polling scheduler (runs every N minutes during market hours)
+  --briefing <b>   Render a scheduled briefing instead of the event pipeline:
+                   premarket | closing (uses snapshots + recent store events)
+  --dry-run        Force DRY_RUN (print message, send nothing)
+  --send           Allow real Telegram delivery (DRY_RUN=false)
+  --no-ai          Skip OpenAI analysis (rules-only verdicts)
+  --json           Machine-readable summary on stdout
+  --memory         Use in-memory store instead of SQLite (testing)
+  -h, --help       Show this help
+
+Env: DRY_RUN, OPENAI_API_KEY, OPENAI_API_KEY_FILE,
+     TELEGRAM_CHAT_ID, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH,
+     EVENT_POLL_INTERVAL_MINUTES, MAX_ALERTS_PER_HOUR
+`;
+
+function parseCli() {
+  try {
+    const { values } = parseArgs({
+      options: {
+        mode: { type: 'string', default: 'intraday' },
+        briefing: { type: 'string' },
+        poll: { type: 'boolean', default: false },
+        'dry-run': { type: 'boolean', default: false },
+        send: { type: 'boolean', default: false },
+        'no-ai': { type: 'boolean', default: false },
+        json: { type: 'boolean', default: false },
+        memory: { type: 'boolean', default: false },
+        help: { type: 'boolean', short: 'h', default: false },
+      },
+      strict: true,
+    });
+    return values;
+  } catch (err) {
+    process.stderr.write(`${err.message}\n\n${USAGE}`);
+    process.exit(2);
+  }
+}
+
+/**
+ * BRIEFING path: collect market/global snapshots, pull recent events from the
+ * store, assemble context, render the template, deliver through the transport.
+ * Missing data → sections omitted (never fabricated).
+ */
+async function runBriefing({ briefing, providers, store, transport, logger, settings, now, runId }) {
+  const startedAt = now.toISOString();
+  const kind = briefing;
+
+  // Collect only market/global providers — briefings don't need news feeds.
+  const briefingProviders = providers.filter((p) => ['market', 'global'].includes(p.kind));
+  const collected = await runProviders(briefingProviders, { logger, mode: kind, now }, logger);
+  const snapshots = collected.items.filter((i) => i?.kind === 'snapshot').map((i) => i.snapshot ?? i);
+
+  // Lookback: pre-market covers the previous evening, closing covers today.
+  const hours = kind === 'premarket' ? 48 : 24;
+  const since = new Date(now.getTime() - hours * 3600 * 1000).toISOString();
+  const events = store.listRecentEvents(since, 40);
+
+  const ctx = kind === 'premarket'
+    ? buildPreMarketContext({ snapshots, events, now })
+    : buildClosingContext({ snapshots, events, now });
+  const text = kind === 'premarket' ? formatPreMarket(ctx) : formatClosing(ctx);
+
+  let sent = false;
+  let sendError = null;
+  try {
+    await transport.send(text, { mode: kind, category: 'BRIEFING', event_id: runId });
+    sent = true;
+  } catch (err) {
+    sendError = err.message;
+    logger.error('TELEGRAM_SEND', `briefing send failed: ${err.message}`);
+  }
+
+  const summary = {
+    runId,
+    kind,
+    dryRun: Boolean(settings.dryRun),
+    snapshots: snapshots.length,
+    eventsConsidered: events.length,
+    messageLength: text.length,
+    sent,
+    sendError,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    text,
+  };
+  store.saveRun({
+    run_id: runId,
+    mode: kind,
+    started_at: startedAt,
+    finished_at: summary.finishedAt,
+    status: sent ? 'ok' : 'error',
+    stats: { snapshots: snapshots.length, events: events.length, messageLength: text.length },
+    error: sendError,
+  });
+  return summary;
+}
+
+function printBriefingSummary(summary, settings) {
+  const lines = [
+    '',
+    `BRIEFING ${summary.runId}  kind=${summary.kind}  dryRun=${summary.dryRun}`,
+    `  snapshots=${summary.snapshots} recentEvents=${summary.eventsConsidered} messageLength=${summary.messageLength}`,
+    `  sent=${summary.sent}${summary.sendError ? ` error=${summary.sendError}` : ''}`,
+    '',
+    summary.text,
+    '',
+  ];
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+function printSummary(summary, settings, mode) {
+  const c = summary.counts;
+  const d = c.detection ?? {};
+  const lines = [
+    '',
+    `RUN ${summary.runId}  mode=${mode}  dryRun=${settings.dryRun}`,
+    `  collected=${c.collected} articles=${c.articles} snapshots=${c.snapshots} dropped=${c.dropped ?? 0}`,
+    `  detect: NEW=${d.NEW ?? 0} UPDATED=${d.UPDATED ?? 0} DUPLICATE=${d.DUPLICATE ?? 0} KNOWN=${d.KNOWN ?? 0}`,
+    `  classify: HIGH=${c.levels?.HIGH ?? 0} MEDIUM=${c.levels?.MEDIUM ?? 0} LOW=${c.levels?.LOW ?? 0}`,
+    `  decisions: approved=${c.approved ?? 0} rejected=${c.rejected ?? 0}`,
+    `  telegram: published=${c.published ?? 0} sendFailures=${c.sendFailures ?? 0}`,
+  ];
+  if (summary.failures.length) {
+    lines.push(`  provider failures: ${summary.failures.map((f) => `${f.provider}(${f.error})`).join(', ')}`);
+  }
+  if (summary.rejectReasons && Object.keys(summary.rejectReasons).length) {
+    lines.push(`  reject reasons: ${JSON.stringify(summary.rejectReasons)}`);
+  }
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
+async function main() {
+  const args = parseCli();
+  if (args.help) {
+    process.stdout.write(USAGE);
+    return;
+  }
+
+  const cfg = loadConfig();
+  const { settings, feeds, officialSources, sources, importance, entities, categories, text } = cfg;
+
+  // CLI overrides (env DRY_RUN handled inside loadConfig)
+  if (args['dry-run']) settings.dryRun = true;
+  if (args.send) settings.dryRun = false;
+  if (args['no-ai']) settings.ai.enabled = false;
+
+  const mode = args.mode;
+  if (!['intraday', 'premarket', 'closing'].includes(mode)) {
+    process.stderr.write(`Unknown mode: ${mode}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  const briefing = args.briefing ?? null;
+  if (briefing && !['premarket', 'closing'].includes(briefing)) {
+    process.stderr.write(`Unknown briefing: ${briefing}\n\n${USAGE}`);
+    process.exit(2);
+  }
+  const poll = Boolean(args.poll);
+  if (poll && mode !== 'intraday') {
+    process.stderr.write(`--poll only works with --mode intraday (default)\n\n${USAGE}`);
+    process.exit(2);
+  }
+
+  const now = new Date();
+  const runId = `${mode}_${now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
+  const logger = createLogger({ runId, dir: settings.paths.logs, toConsole: !args.json });
+  const store = openStore({ driver: args.memory ? 'memory' : 'sqlite', dbPath: settings.paths.db });
+
+  try {
+    const categorizer = createCategorizer(categories);
+    const extractor = createEntityExtractor(entities);
+    const textOps = createTextOps(text);
+    const importanceEngine = createImportanceEngine(importance);
+    const sourceRegistry = createSourceRegistry(sources);
+    const ai = createOpenAIService({ settings, sources, logger });
+    const transport = createTransport({
+      mode: settings.dryRun ? 'dry-run' : 'gramjs',
+      options: {
+        logger,
+        chatId: process.env.TELEGRAM_CHAT_ID ?? null,
+        apiId: process.env.TELEGRAM_API_ID ?? '20412495',
+        apiHash: process.env.TELEGRAM_API_HASH ?? 'b8843afdbd2790efd99744c20e8f4f77',
+        sessionPath: process.env.TELEGRAM_SESSION_PATH ?? null,
+      },
+    });
+    const providers = createProviders({ settings, feeds, officialSources, categorizer, extractor });
+
+    // ---------------------------------------------------- BRIEFING COMMAND
+    if (briefing) {
+      const summary = await runBriefing({
+        briefing,
+        providers,
+        store,
+        transport,
+        logger,
+        settings,
+        now,
+        runId,
+      });
+      if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+      else printBriefingSummary(summary, settings);
+      return;
+    }
+
+    // ---------------------------------------------------- POLLING MODE
+    if (poll) {
+      const poller = createPoller({
+        settings,
+        pipelineFn: async ({ mode, now: pollNow, runId: pollRunId }) => {
+          return runPipeline({
+            providers,
+            settings,
+            importance: importanceEngine,
+            textOps,
+            categorizer,
+            extractor,
+            store,
+            logger,
+            ai,
+            transport,
+            mode,
+            now: pollNow,
+            runId: pollRunId,
+            noAi: !settings.ai.enabled,
+            scheduledBriefing: false,
+            sourceRegistry,
+          });
+        },
+        logger,
+      });
+      await poller.start();
+
+      // Handle graceful shutdown
+      let shuttingDown = false;
+      async function shutdown(signal) {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        logger?.info('POLLER', `received ${signal}, shutting down...`);
+        await poller.stop();
+        logger.close();
+        store.close();
+        process.exit(0);
+      }
+      process.on('SIGINT', () => shutdown('SIGINT'));
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+      // Keep the process alive
+      return;
+    }
+
+    const summary = await runPipeline({
+      providers,
+      settings,
+      importance: importanceEngine,
+      textOps,
+      categorizer,
+      extractor,
+      store,
+      logger,
+      ai,
+      transport,
+      mode,
+      now,
+      runId,
+      noAi: !settings.ai.enabled,
+      scheduledBriefing: mode !== 'intraday',
+      sourceRegistry,
+    });
+
+    store.saveRun({
+      run_id: runId,
+      mode,
+      started_at: summary.startedAt,
+      finished_at: summary.finishedAt,
+      status: summary.status,
+      stats: summary.counts,
+      error: null,
+    });
+
+    if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+    else printSummary(summary, settings, mode);
+  } catch (err) {
+    logger.error('PIPELINE', `fatal: ${err.message}`, { stack: err.stack });
+    try {
+      store.saveRun({
+        run_id: runId,
+        mode,
+        started_at: now.toISOString(),
+        finished_at: new Date().toISOString(),
+        status: 'error',
+        stats: {},
+        error: err.message,
+      });
+    } catch {
+      /* store already broken — log above is enough */
+    }
+    process.exitCode = 1;
+  } finally {
+    logger.close();
+    store.close();
+  }
+}
+
+main().catch((err) => {
+  process.stderr.write(`[FATAL] ${err?.stack ?? err}\n`);
+  process.exitCode = 1;
+});

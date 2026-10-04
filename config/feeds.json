@@ -1,0 +1,38 @@
+[
+  {
+    "source": "Moneycontrol",
+    "kind": "news",
+    "url": "https://www.moneycontrol.com/rss/business.xml",
+    "tier": 3,
+    "enabled": true
+  },
+  {
+    "source": "Livemint",
+    "kind": "news",
+    "url": "https://livemint.com/rss/markets",
+    "tier": 2,
+    "enabled": true
+  },
+  {
+    "source": "Economic Times",
+    "kind": "news",
+    "url": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "tier": 2,
+    "enabled": true
+  },
+  {
+    "source": "Business Standard",
+    "kind": "news",
+    "url": "https://www.business-standard.com/rss/markets-106.rss",
+    "tier": 2,
+    "enabled": true
+  },
+  {
+    "source": "Moneycontrol Market Reports",
+    "kind": "news",
+    "url": "https://www.moneycontrol.com/rss/marketreports.xml",
+    "tier": 3,
+    "enabled": false,
+    "note": "Feed is stale at source (last built Jun 2024) - keep disabled until replaced"
+  }
+]

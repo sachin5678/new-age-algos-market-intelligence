@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+
+# Runtime state
+state/
+state/inbox/
+state/inbox/processed/
+state/logs/
+state/*.db
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.production
+.env.staging
+
+# Secrets
+.secrets/
+*.pem
+*.key
+*.crt
+
+# Telegram session
+.mcp-telegram/
+.mcp-telegram/sessions/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Build artifacts
+dist/
+build/
+*.tsbuildinfo
+
+# Docker
+.docker/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Vercel/Netlify
+.vercel
+.netlify
+
+# Supabase
+.supabase/
+
+# TypeScript cache
+*.tsbuildinfo

@@ -1,0 +1,19 @@
+{
+  "order": ["SEBI", "RBI", "IPO", "RESULTS", "FNO", "CORPORATE_ACTION", "MACRO", "COMMODITIES", "CURRENCY", "BONDS", "GLOBAL", "SECTOR", "STOCK", "MARKET", "OTHER"],
+  "patterns": {
+    "SEBI": ["\\bsebi\\b", "securities and exchange board"],
+    "RBI": ["\\brbi\\b", "reserve bank of india", "\\brepo rate\\b", "\\bmonetary policy committee\\b", "\\bmpc\\b", "\\bcrr\\b", "\\bslr\\b"],
+    "IPO": ["\\bipo\\b", "initial public offering", "\\bpre-?ipo\\b", "ipos? (opens?|closes?|lists?|allot)", "share allotment", "demat shares? credited"],
+    "RESULTS": ["quarterly results?", "\\bq[1-4] results?\\b", "\\bfy ?20?\\d{2} results?\\b", "net profit", "revenue (grew|falls?|jumps?|rises?|declines?|up|down)", "\\bearnings?\\b", "profit after tax", "\\bpat\\b.*(jumps?|falls?|rises?|drops?)"],
+    "FNO": ["\\bf&?o\\b", "futures and options", "\\bderivatives?\\b", "option chain", "position limits?", "ban period", "\\bexpiry\\b", "index futures", "index options"],
+    "CORPORATE_ACTION": ["\\bdividend\\b", "\\bbonus issue\\b", "\\bstock split\\b", "\\bsplits?\\b.*\\bface value\\b", "record date", "\\bbuyback\\b", "\\bmerger\\b", "\\bacquisition\\b", "\\bacquires?\\b", "\\btakeover\\b", "\\bopen offer\\b", "\\brights issue\\b", "\\bdemerger\\b", "\\bdelisting\\b", "\\bdelist\\b"],
+    "MACRO": ["\\bgdp (data|growth|numbers|print|data show)\\b", "\\bcpi (data|numbers|print)\\b", "inflation (data|numbers|print|accelerates|eases|rises|falls)", "\\bfiscal deficit\\b", "\\bunion budget\\b", "\\bbudget 20\\d\\d\\b", "\\biip\\b", "industrial production", "\\bfii\\b", "\\bdii\\b", "\\bpmi\\b", "gst (collections|rate|council)", "\\bfed\\b", "\\bfomc\\b"],
+    "COMMODITIES": ["\\bcrude\\b", "\\bbrent\\b", "\\bwti\\b", "\\bgold\\b", "\\bsilver\\b", "\\bcopper\\b", "\\bnatural gas\\b", "\\bmcx\\b"],
+    "CURRENCY": ["\\busd/inr\\b", "\\brupee\\b", "\\bdollar index\\b", "\\bdxy\\b", "\\bforex\\b", "\\bcurrency\\b"],
+    "BONDS": ["\\bbonds?\\b", "\\bg-?secs?\\b", "\\byields?\\b", "\\bt-?bills?\\b", "government securities", "\\bdebentures?\\b"],
+    "GLOBAL": ["wall street", "\\bs&p 500\\b", "\\bnasdaq\\b", "\\bdow jones\\b", "\\bhang seng\\b", "\\bnikkei\\b", "\\bshanghai composite\\b", "us markets?", "asian markets?", "\\bgift nifty\\b", "global markets?", "\\bgeopolitic"],
+    "SECTOR": ["\\bbanking\\b", "\\bbanks\\b", "\\bpharma\\b", "\\bauto\\b", "\\bautomobile\\b", "\\brealty\\b", "\\breal estate\\b", "\\bfmcg\\b", "\\btelecom\\b", "\\bcement\\b", "\\bchemicals\\b", "\\bmetals?\\b", "\\bmedia\\b", "\\baviation\\b", "\\bdefence\\b", "\\bpower\\b", "\\binfra\\b", "\\b-it\\b|\\bit sector\\b", "\\bpsu banks?\\b"],
+    "STOCK": ["\\bshares?\\b", "\\bstocks?\\b", "\\bscrip\\b", "\\bstake\\b", "\\bpromoters?\\b", "\\bqip\\b", "\\bupper circuit\\b", "\\blower circuit\\b"],
+    "MARKET": ["\\bnifty\\b", "\\bsensex\\b", "\\bmarkets?\\b", "\\bbse\\b", "\\bnse\\b", "\\btrading\\b", "\\bindices\\b", "\\bindex\\b"]
+  }
+}

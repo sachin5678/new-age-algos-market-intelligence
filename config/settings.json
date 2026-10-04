@@ -1,0 +1,57 @@
+{
+  "dryRun": true,
+  "marketHours": {
+    "timezone": "Asia/Kolkata",
+    "start": "09:15",
+    "end": "15:30",
+    "weekdaysOnly": true
+  },
+  "dedupe": {
+    "combinedThreshold": 0.6,
+    "highSimilarity": 0.85,
+    "titleOnlyThreshold": 0.75,
+    "entityTitleMin": 0.3,
+    "recentWindowHours": 72,
+    "materialNewTokenMin": 3,
+    "categoryGroups": [
+      ["SEBI", "RBI", "FNO", "MACRO"],
+      ["SECTOR", "STOCK", "CORPORATE_ACTION", "RESULTS", "IPO"],
+      ["GLOBAL", "COMMODITIES", "CURRENCY", "BONDS"],
+      ["MARKET"]
+    ]
+  },
+  "publish": {
+    "autoPublishLevels": ["HIGH"],
+    "minScore": 65,
+    "cooldownMinutes": 60,
+    "minIntervalMinutes": 5,
+    "dailyCap": 12,
+    "requireVerification": true
+  },
+  "ai": {
+    "enabled": true,
+    "model": "gpt-4o-mini",
+    "apiKeyFile": "C:\\Users\\Admin\\.secrets\\openai-key",
+    "timeoutMs": 30000,
+    "maxEventsPerRun": 20
+  },
+  "scheduler": {
+    "enabled": true,
+    "pollIntervalMinutes": 5,
+    "maxAlertsPerHour": 3,
+    "criticalAutoPublish": false
+  },
+  "paths": {
+    "inbox": "state/inbox",
+    "archive": "state/inbox/processed",
+    "logs": "state/logs",
+    "db": "state/market.db"
+  },
+  "feedsFile": "config/feeds.json",
+  "officialSourcesFile": "config/official_sources.json",
+  "sourcesFile": "config/sources.json",
+  "importanceFile": "config/importance.json",
+  "entitiesFile": "config/entities.json",
+  "categoriesFile": "config/categories.json",
+  "textFile": "config/text.json"
+}

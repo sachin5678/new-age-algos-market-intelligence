@@ -1,0 +1,42 @@
+{
+  "defaultTier": 3,
+  "tiers": {
+    "1": {
+      "label": "official",
+      "description": "Primary/official sources — treated as confirmed fact",
+      "sources": [
+        "NSE", "BSE", "SEBI", "RBI", "Government", "Ministry of Finance",
+        "Exchange filing", "Company filing", "Corporate filing", "MCA",
+        "IRDAI", "PFRDA", "GST Council"
+      ]
+    },
+    "2": {
+      "label": "reputable_media",
+      "description": "Major reputable financial media and wires — reported, not confirmed",
+      "sources": [
+        "Reuters", "Bloomberg", "Economic Times", "Business Standard",
+        "CNBC-TV18", "Mint", "Livemint", "Financial Express", "BusinessLine"
+      ]
+    },
+    "3": {
+      "label": "reputable_financial_press",
+      "description": "Other reputable financial publications — reported, not confirmed",
+      "sources": [
+        "Moneycontrol", "NDTV Profit", "Zee Business", "PTI",
+        "Press Trust of India", "Associated Press", "AFP"
+      ]
+    },
+    "4": {
+      "label": "commentary_social",
+      "description": "Social media / commentary — must NEVER be treated as confirmed fact",
+      "sources": ["Twitter", "X", "YouTube", "Reddit", "Telegram", "Social media"]
+    }
+  },
+  "aliases": {
+    "et": "Economic Times",
+    "the economic times": "Economic Times",
+    "bs": "Business Standard",
+    "cnbc tv18": "CNBC-TV18",
+    "fe": "Financial Express"
+  }
+}

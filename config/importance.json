@@ -1,0 +1,123 @@
+{
+  "defaultLevel": "LOW",
+  "baseScores": { "HIGH": 80, "MEDIUM": 55, "LOW": 25 },
+  "rules": [
+    {
+      "id": "sebi-action",
+      "level": "HIGH",
+      "weight": 30,
+      "reason": "SEBI rule/regulation/circular change",
+      "patterns": [
+        "\\bsebi\\b.*(rule|regulat|norm|circular|direct|order|ban|notif|guideline|clamp|approve|allow|restrict|tighten|limit|consultation|position)",
+        "(rule|regulat|norm|circular|notif|guideline|clampdown|clampdown|consultation paper|position limits?)\\b.*\\bsebi\\b"
+      ]
+    },
+    {
+      "id": "rbi-policy",
+      "level": "HIGH",
+      "weight": 30,
+      "reason": "RBI policy/regulatory change",
+      "patterns": [
+        "\\brbi\\b.*(repo|rate|policy|crr|slr|guideline|norms?|circular|notif|regulat|swap|withdraw|liberalis|tighten|eases?|hikes?|cuts?)",
+        "\\b(repo rate|monetary policy|reserve bank)\\b.*\\b(cuts?|hikes?|holds?|raises?|keeps?|eases?|tightens?)\\b",
+        "\\breserve bank of india\\b"
+      ]
+    },
+    {
+      "id": "fo-rule-change",
+      "level": "HIGH",
+      "weight": 25,
+      "reason": "Major F&O/derivatives rule change",
+      "patterns": [
+        "\\b(f&?o|futures and options|derivatives?)\\b.*\\b(rules?|regulations?|regulatory|norms?|circulars?|chang\\w*|limits?|introduc\\w*|withdraw\\w*|suspend\\w*|bans?|banned)\\b",
+        "\\b(rules?|regulations?|regulatory|norms?|circulars?|chang\\w*|limits?|introduc\\w*|withdraw\\w*|suspend\\w*|bans?|banned)\\b.*\\b(f&?o|futures and options|derivatives?)\\b"
+      ]
+    },
+    {
+      "id": "major-corporate-action",
+      "level": "HIGH",
+      "weight": 25,
+      "reason": "Major corporate action",
+      "patterns": ["\\bmerg\\w*\\b", "\\bacquir\\w*\\b", "\\btakeovers?\\b", "\\bopen offer\\b", "\\bdemerg\\w*\\b", "\\bdelist\\w*\\b"]
+    },
+    {
+      "id": "major-earnings",
+      "level": "HIGH",
+      "weight": 25,
+      "reason": "Major earnings surprise",
+      "patterns": [
+        "\\b(profit\\w*|earnings?|pat|revenue)\\b.*\\b(blowout|soars?|surges?|plunges?|collapses?|doubles?|halves?|misses estimates|beats estimates)\\b",
+        "\\b(beats?|misses?) (estimates|forecast|expectations)\\b",
+        "quarterly profit\\b.*\\b(record|jumps?|falls?|surges?|plunges?)\\b"
+      ]
+    },
+    {
+      "id": "major-macro",
+      "level": "HIGH",
+      "weight": 25,
+      "reason": "Major macroeconomic release",
+      "patterns": [
+        "\\bgdp (data|growth|numbers|print)\\b",
+        "\\binflation\\b (data|numbers|print|accelerates|eases|rises|falls)",
+        "\\bcpi (data|numbers|print)\\b",
+        "\\bfiscal deficit\\b",
+        "\\bunion budget\\b",
+        "\\bbudget 20\\d\\d\\b"
+      ]
+    },
+    {
+      "id": "govt-market-policy",
+      "level": "HIGH",
+      "weight": 25,
+      "reason": "Government decision affecting markets",
+      "patterns": [
+        "\\b(government|govt)\\b.*\\b(raises?|cuts?|imposes?|bans?|rolls? out|approves?|extends?)\\b.*\\b(tax|duty|tariff|subsid\\w*|gst|restrictions?|incentives?)\\b",
+        "\\b(tax|duty|tariff|gst)\\b.*\\b(hike|cut|impose|slash)\\w*\\b"
+      ]
+    },
+    {
+      "id": "sector-impact",
+      "level": "MEDIUM",
+      "weight": 15,
+      "reason": "Sector development",
+      "patterns": [
+        "\\b(sector|industry)\\b.*(gets?|receives?|faces?|sees?|boost|hits?|tailwinds?|headwinds?|support|blow)\\b",
+        "\\b(banks?|autos?|pharma|metals?|realty|infra|defence|power|telecom|fmcg|cement|chemicals|it sector|it services)\\b.*(surge|plunge|rally|tumbles?|bags?|wins?|gets? .*order|approvals?|bans?|support)\\b"
+      ]
+    },
+    {
+      "id": "corporate-meaningful",
+      "level": "MEDIUM",
+      "weight": 15,
+      "reason": "Meaningful corporate development",
+      "patterns": [
+        "(bags?|wins?|lands?) .*\\borders?\\b",
+        "\\bcapex\\b|new plant|expansion plan",
+        "\\bqip\\b|qualified institutional",
+        "promoter.*(sells?|increases|stakes?)",
+        "credit rating.*(upgrade|downgrade)",
+        "\\bstake sale\\b"
+      ]
+    },
+    {
+      "id": "macro-flows",
+      "level": "MEDIUM",
+      "weight": 12,
+      "reason": "Institutional flows / data release",
+      "patterns": ["\\bfii\\b.*(buys?|sells?|net)", "\\bdii\\b.*(buys?|sells?|net)", "\\bpmi\\b", "\\biip\\b", "industrial production"]
+    },
+    {
+      "id": "analyst-opinion",
+      "level": "LOW",
+      "weight": -25,
+      "reason": "Analyst commentary / generic opinion",
+      "patterns": [
+        "\\banalysts?\\b", "\\bexperts?\\b", "\\bbrokerages?\\b", "\\bopinion\\b",
+        "target price", "\\btips?\\b", "\\btop picks?\\b", "expected to (rise|fall|touch)",
+        "\\b(buy|sell|hold) (rating|call)\\b", "\\boutlook\\b"
+      ]
+    }
+  ],
+  "boosts": { "officialSource": 15, "corroborated": 10, "novel": 10 },
+  "penalties": { "tier3Source": -10 }
+}

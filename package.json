@@ -1,0 +1,21 @@
+{
+  "name": "new-age-algos-market-intel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "New Age Algos - Indian market intelligence pipeline (event-driven, dedup-first, Telegram alerts)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "intraday": "node src/index.js --mode intraday",
+    "premarket": "node src/index.js --mode premarket",
+    "closing": "node src/index.js --mode closing",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "telegram": "^2.26.22"
+  }
+}
