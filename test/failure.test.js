@@ -84,8 +84,8 @@ test('AI service falls back to rules when the network fails', async () => {
     },
   });
   const v = await ai.analyze({ title: 'SEBI issues circular on margin norms', importance_level: 'HIGH', companies: [], sectors: [] });
-  assert.equal(v.analysis_source, 'rules');
-  assert.equal(v.fallback_reason, 'ai_error');
+  assert.equal(v.analysis_source, 'rules_only');
+  assert.equal(v.fallback_reason, 'ai_unavailable');
   assert.equal(v.is_material, true);
   assert.equal(v.confidence, 'low');
 });
@@ -97,8 +97,8 @@ test('AI service falls back on unparseable completions', async () => {
     fetchImpl: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'not json at all' } }] }) }),
   });
   const v = await ai.analyze({ title: 'x', importance_level: 'MEDIUM' });
-  assert.equal(v.analysis_source, 'rules');
-  assert.equal(v.fallback_reason, 'ai_error');
+  assert.equal(v.analysis_source, 'rules_only');
+  assert.equal(v.fallback_reason, 'ai_unavailable');
   assert.equal(v.is_material, false);
 });
 
@@ -111,8 +111,8 @@ test('AI service reports a missing key without throwing', async () => {
   });
   assert.equal(ai.hasKey, false);
   const v = await ai.analyze({ title: 'x', importance_level: 'HIGH' });
-  assert.equal(v.analysis_source, 'rules');
-  assert.equal(v.fallback_reason, 'no_api_key');
+  assert.equal(v.analysis_source, 'rules_only');
+  assert.equal(v.fallback_reason, 'ai_unavailable');
 });
 
 test('AI service validates and coerces structured output', async () => {
@@ -160,7 +160,7 @@ test('AI service can be disabled entirely', async () => {
     },
   });
   const v = await ai.analyze({ title: 'x', importance_level: 'MEDIUM' });
-  assert.equal(v.analysis_source, 'rules');
+  assert.equal(v.analysis_source, 'rules_only');
   assert.equal(v.fallback_reason, 'disabled');
 });
 

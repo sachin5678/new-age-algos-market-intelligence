@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeHtml, formatAlert, statusLine, chunkMessage } from '../src/telegram/format.js';
+import { formatAlert, statusLine, chunkMessage } from '../src/telegram/format.js';
+import { escapeMarkdownV2 } from '../src/telegram/transport.js';
 
 const verdict = {
   event_type: 'regulatory',
@@ -29,26 +30,26 @@ const event = {
   importance_level: 'HIGH',
 };
 
-test('escapeHtml neutralises Telegram HTML metacharacters', () => {
-  assert.equal(escapeHtml('<b> & "x"'), '&lt;b&gt; &amp; "x"');
+test('escapeMarkdownV2 neutralises Telegram MarkdownV2 metacharacters', () => {
+  assert.equal(escapeMarkdownV2('<b> & "x"'), '\\<b\\> & "x"');
 });
 
-test('formatAlert matches the New Age Algos wire format', () => {
+test('formatAlert matches the New Age Algos wire format (MarkdownV2)', () => {
   const text = formatAlert(event, verdict);
   const lines = text.split('\n');
 
-  assert.equal(lines[0], '🚨 MARKET ALERT');
-  assert.ok(text.includes(escapeHtml(verdict.headline)));
-  assert.ok(text.includes(verdict.summary));
-  assert.ok(text.includes('📌 Market relevance:'));
-  assert.ok(text.includes('🏭 Sectors:'));
+  assert.equal(lines[0], '🚨 *MARKET ALERT*');
+  assert.ok(text.includes(escapeMarkdownV2(verdict.headline)));
+  assert.ok(text.includes(escapeMarkdownV2(verdict.summary)));
+  assert.ok(text.includes('📌 *Market relevance:*'));
+  assert.ok(text.includes('🏭 *Sectors:*'));
   assert.ok(text.includes('BANKING'));
-  assert.ok(text.includes('📊 Stocks potentially affected:'));
+  assert.ok(text.includes('📊 *Stocks potentially affected:*'));
   assert.ok(text.includes('RELIANCE'));
-  assert.ok(text.includes('🔎 Source:'));
+  assert.ok(text.includes('🔎 *Source:*'));
   assert.ok(text.includes('Moneycontrol'));
-  assert.ok(text.includes('⚠️ Status:'));
-  assert.ok(text.trimEnd().endsWith('— New Age Algos'), 'brand footer missing');
+  assert.ok(text.includes('⚠️ *Status:*'));
+  assert.ok(text.trimEnd().endsWith('\\- New Age Algos'), 'brand footer missing');
 });
 
 test('formatAlert never leaks raw scores or classification internals', () => {
@@ -64,8 +65,8 @@ test('formatAlert omits unsupported sectors/stocks sections entirely', () => {
     { ...event, sectors: [] },
     { headline: 'Story', summary: 'Sum.', affected_sectors: [], affected_stocks: [] }
   );
-  assert.ok(!text.includes('🏭 Sectors:'), 'empty sectors section must be omitted');
-  assert.ok(!text.includes('📊 Stocks potentially affected:'), 'unsupported stocks must be omitted');
+  assert.ok(!text.includes('🏭 *Sectors:*'), 'empty sectors section must be omitted');
+  assert.ok(!text.includes('📊 *Stocks potentially affected:*'), 'unsupported stocks must be omitted');
 });
 
 test('statusLine follows the source hierarchy', () => {
@@ -87,7 +88,7 @@ test('formatAlert escapes injected HTML in headline and summary', () => {
   });
   assert.ok(!text.includes('<script>'));
   assert.ok(!text.includes('<b>bold?</b>'));
-  assert.ok(text.includes('&lt;script&gt;'));
+  assert.ok(text.includes('<script\\>'));
 });
 
 function evilEvent() {
@@ -101,7 +102,7 @@ test('fallback verdict (facts, no summary) still renders a summary line', () => 
     affected_sectors: [],
     affected_stocks: [],
   });
-  assert.ok(text.includes('Fact one. Fact two.'));
+  assert.ok(text.includes('Fact one\\. Fact two\\.'));
 });
 
 test('chunkMessage respects the 4096-char Telegram limit', () => {

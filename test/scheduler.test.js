@@ -108,7 +108,7 @@ test('1) New SEBI official event → ALERT sent', async () => {
   }], { now: MARKET_NOW });
   assert.equal(h.transport.sent.length, 1, 'exactly one alert for new SEBI event');
   assert.ok(h.transport.sent[0].text.includes('Confirmed — NSE'));
-  assert.ok(h.transport.sent[0].text.includes('🚨 MARKET ALERT'));
+  assert.ok(h.transport.sent[0].text.includes('🚨 *MARKET ALERT*'));
 });
 
 test('2) Duplicate news article (same URL) → NO alert', async () => {
@@ -117,13 +117,15 @@ test('2) Duplicate news article (same URL) → NO alert', async () => {
     ...BASE,
     url: 'https://nseindia.com/circular/sebi-fo-limits-v2',
     title: 'SEBI announces new F&O margin framework',
-  }], { runId: 'run1' });
+    description: 'The regulator has notified a revised margin framework for derivatives.',
+  }], { runId: 'run1', now: MARKET_NOW });
 
   const summary = await runOnce(h, [{
     ...BASE,
     url: 'https://nseindia.com/circular/sebi-fo-limits-v2',
     title: 'SEBI announces new F&O margin framework',
-  }], { runId: 'run2' });
+    description: 'The regulator has notified a revised margin framework for derivatives.',
+  }], { runId: 'run2', now: MARKET_NOW });
   assert.equal(summary.counts.approved, 0);
   assert.equal(summary.counts.detection.KNOWN, 1);
   assert.equal(h.transport.sent.length, 1, 'no duplicate alert');

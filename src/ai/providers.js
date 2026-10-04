@@ -10,7 +10,7 @@ export const AI_STATUS = {
   AWAITING_CONFIRMATION: 'awaiting_confirmation'
 };
 
-export class BaseAIProvider {
+class BaseAIProvider {
   constructor({ name, settings, logger = null } = {}) {
     this.name = name;
     this.settings = settings;
@@ -29,7 +29,7 @@ export class BaseAIProvider {
 /**
  * OpenAI Provider (primary)
  */
-export class OpenAIProvider extends BaseAIProvider {
+class OpenAIProvider extends BaseAIProvider {
   constructor({ settings, logger = null, fetchImpl = fetch, apiKey = null } = {}) {
     super({ name: 'openai', settings, logger });
     this.apiKey = apiKey;
@@ -239,7 +239,7 @@ Output ONLY a strict JSON object with exactly these keys:
 /**
  * Rules-only fallback provider (always available)
  */
-export class RulesOnlyProvider extends BaseAIProvider {
+class RulesOnlyProvider extends BaseAIProvider {
   constructor({ settings, logger = null } = {}) {
     super({ name: 'rules_only', settings, logger });
   }
@@ -250,7 +250,8 @@ export class RulesOnlyProvider extends BaseAIProvider {
 
   async analyze(event, ctx = {}) {
     const level = event.importance_level ?? 'LOW';
-    return this._fallbackVerdict(event, 'ai_unavailable');
+    const reason = ctx.aiDisabled ? 'disabled' : 'ai_unavailable';
+    return this._fallbackVerdict(event, reason);
   }
 
   _fallbackVerdict(event, reason = 'ai_unavailable') {
@@ -306,18 +307,27 @@ export class RulesOnlyProvider extends BaseAIProvider {
  * Factory to create AI provider with fallback chain
  */
 export function createAIProvider({ settings, logger = null, fetchImpl = fetch, apiKey = null } = {}) {
-  const providers = [
-    new OpenAIProvider({ settings, logger, fetchImpl, apiKey }),
-    new RulesOnlyProvider({ settings, logger }),
-  ];
+  const providers = [];
+  const aiDisabled = settings.ai?.enabled === false;
+  
+  // Only add OpenAI provider if AI is enabled
+  if (!aiDisabled) {
+    providers.push(new OpenAIProvider({ settings, logger, fetchImpl, apiKey }));
+  }
+  
+  // Rules-only provider is always available as fallback
+  providers.push(new RulesOnlyProvider({ settings, logger }));
 
   async function analyze(event, ctx = {}) {
+    // Pass aiDisabled context to providers
+    const providerCtx = { ...ctx, aiDisabled };
+    
     for (const provider of providers) {
       if (!provider.isAvailable()) {
         continue;
       }
       try {
-        const result = await provider.analyze(event, ctx);
+        const result = await provider.analyze(event, providerCtx);
         if (provider.name !== 'openai') {
           // Mark as rules-only
           result.analysis_source = provider.name;
@@ -329,7 +339,7 @@ export function createAIProvider({ settings, logger = null, fetchImpl = fetch, a
       }
     }
     // Should never reach here since RulesOnlyProvider is always available
-    return providers[providers.length - 1].analyze(event, ctx);
+    return providers[providers.length - 1].analyze(event, providerCtx);
   }
 
   return { analyze };

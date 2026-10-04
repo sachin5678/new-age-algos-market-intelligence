@@ -50,7 +50,7 @@ function backoffDelay(attempt, baseMs = 1000) {
  */
 export function escapeMarkdownV2(text = '') {
   return String(text)
-    .replace(/([_*[\]()~`>#+=\-|{}.!])/g, '\\$1');
+    .replace(/([_*[\]()~`#+=\-|{}.!><])/g, '\\$1');
 }
 
 /**

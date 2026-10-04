@@ -117,9 +117,9 @@ test('pipeline end-to-end: dedupes to exactly one alert; re-run is a no-op', asy
   // exactly ONE Telegram message for the two-article event
   assert.equal(transport.sent.length, 1, 'same underlying event must yield one message');
   const msg = transport.sent[0].text;
-  assert.ok(msg.includes('🚨 MARKET ALERT'));
+  assert.ok(msg.includes('🚨 *MARKET ALERT*'));
   assert.ok(msg.includes('Moneycontrol'), 'source shown');
-  assert.ok(msg.includes('⚠️ Status:'), 'status line missing');
+  assert.ok(msg.includes('⚠️ *Status:*'), 'status line missing');
   assert.ok(!msg.includes('importance'), 'internal classification leaked');
   assert.ok(!/\b100\b/.test(msg), 'raw score leaked');
 
