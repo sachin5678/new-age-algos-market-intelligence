@@ -187,6 +187,47 @@ function printSummary(summary, settings, mode) {
 /**
  * Health check function - verifies all components are working
  */
+/**
+ * Verify a Bot API token can deliver to `chatId` without posting anything:
+ * getMe → identity, getChatMember → is this bot an admin that may post?
+ * The token is only ever in the URL of the API call, never in logs/output.
+ */
+async function probeBotDelivery({ botToken, chatId, apiBase = 'https://api.telegram.org' }) {
+  const call = async (method, params = {}) => {
+    const url = `${apiBase}/bot${botToken}/${method}`;
+    const res = await fetch(url, {
+      method: params.method ?? 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: params.body ?? JSON.stringify({ chat_id: String(chatId) }),
+    });
+    const data = await res.json().catch(() => null);
+    return { ok: Boolean(data?.ok), data, status: res.status };
+  };
+
+  const me = await call('getMe');
+  if (!me.ok) return { ok: false, error: `getMe failed: ${me.data?.description ?? me.status}` };
+  const bot = me.data.result.username;
+
+  const member = await call('getChatMember');
+  if (!member.ok) {
+    return { ok: false, bot, error: `getChatMember failed: ${member.data?.description ?? member.status}` };
+  }
+
+  const r = member.data.result;
+  const status = r.status;
+  const canPost = Boolean(r.can_post_messages ?? r.rights?.has_admin_rights ?? false);
+  if (status === 'left' || status === 'kicked') {
+    return { ok: false, bot, error: `bot @${bot} is not a member of chat ${chatId}` };
+  }
+  if (status === 'administrator' && !canPost) {
+    return { ok: false, bot, error: `bot @${bot} is admin but lacks "Post messages" right` };
+  }
+  if (status !== 'administrator' && status !== 'creator') {
+    return { ok: false, bot, error: `bot @${bot} is ${status} in chat ${chatId} — needs admin + Post messages` };
+  }
+  return { ok: true, bot, rights: 'admin · post messages' };
+}
+
 async function runHealthCheck({ settings, logger }) {
   const checks = [];
   let healthy = true;
@@ -294,7 +335,19 @@ async function runHealthCheck({ settings, logger }) {
       checks.push({ name: 'telegram:delivery', status: 'fail', message: 'TELEGRAM_CHAT_ID not set' });
       healthy = false;
     } else if (botToken) {
-      checks.push({ name: 'telegram:delivery', status: 'ok', message: `bot-api → chat ${chatId}` });
+      // Live validation: does this token belong to a bot that may post here?
+      // Sends nothing — getMe + getChatMember only.
+      const live = await probeBotDelivery({ botToken, chatId });
+      if (live.ok) {
+        checks.push({
+          name: 'telegram:delivery',
+          status: 'ok',
+          message: `bot @${live.bot} → chat ${chatId} (${live.rights})`,
+        });
+      } else {
+        checks.push({ name: 'telegram:delivery', status: 'fail', message: `bot-api → chat ${chatId}: ${live.error}` });
+        healthy = false;
+      }
     } else {
       checks.push({ name: 'telegram:delivery', status: 'ok', message: `gramjs-session → chat ${chatId}` });
     }
