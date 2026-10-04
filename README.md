@@ -58,6 +58,53 @@ News is fetched directly (RSS HTTP) — the same 5 verified feeds the `rss` MCP 
 
 `DRY_RUN=true` (default): the entire pipeline runs, the Telegram message is printed and logged under `TELEGRAM_SEND`, but nothing is sent.
 
+## Deployment (GitHub Actions)
+
+Production runs on GitHub Actions — no laptop, no OpenCode, no MCPs. Each run is a
+one-shot job: collect → detect → format → send → persist state.
+
+| Workflow | Trigger | Times (UTC / IST) |
+|---|---|---|
+| `market-intelligence.yml` | `schedule` + `workflow_dispatch` | `0 3 * * 1-5` → 08:30 IST pre-market · `*/5 3-10 * * 1-5` → every 5 min, 09:15–15:30 IST · `15 10 * * 1-5` → 15:45 IST closing |
+| `market-intelligence-external.yml` | `repository_dispatch` (`market-check`, `premarket`, `closing`, `market-news`, `health-check`) | on demand — for precise-timing external cron |
+| `ci.yml` | push / PR | tests + Docker image to `ghcr.io` |
+
+**Repository secrets**
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | yes | Bot API delivery in CI (stateless — no session file to carry between runs) |
+| `TELEGRAM_CHAT_ID` | yes | Target chat/channel, e.g. `-1004497477393` |
+| `OPENAI_API_KEY` | optional | AI classification; without it the pipeline runs rules-only |
+
+The bot must be an **administrator of the channel** with *Post messages* right.
+
+Transport selection is automatic: `TELEGRAM_BOT_TOKEN` present → Bot API,
+otherwise the local GramJS session. `DRY_RUN` is `false` for scheduled runs;
+manual `workflow_dispatch` runs honour the `dry_run` input (default: deliver).
+
+State (`state/market.db`, `state/inbox`, `state/logs`) survives between runs
+through `actions/cache`, so dedupe, cooldowns and the event graph persist.
+`workflow_dispatch` input `no_ai: true` skips the OpenAI call.
+
+Manual run:
+
+```bash
+gh workflow run market-intelligence.yml -f job_type=closing -f dry_run=false
+```
+
+External cron (cron-job.org, etc.) POST:
+
+```json
+{ "event_type": "market-check", "client_payload": { "dry_run": false } }
+```
+
+```bash
+curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://api.github.com/repos/OWNER/REPO/dispatches \
+  -d '{"event_type":"market-check","client_payload":{"dry_run":false}}'
+```
+
 ## Config knobs
 
 - `config/importance.json` — HIGH/MEDIUM/LOW rules, auto-publish levels, min score.
@@ -106,6 +153,10 @@ Disabled/failing AI (or an out-of-credit key) → rules-only fallback verdict wi
 `confidence: low` — single-source media then fails the verification gate and is held.
 
 ## Telegram output
+
+Messages are delivered as **Telegram HTML** (`<b>`, `<i>`, `<u>`, `<code>`).
+MarkdownV2 is deliberately not used: gramjs' MarkdownV2 parser ignores backslash
+escapes and mangles hyphens, which made `\(Reuters\)` / `\-` render literally.
 
 - **Intraday alert** (`formatAlert`): `🚨 MARKET ALERT` wire format — headline, 2–3
   sentence summary, 📌 market relevance, 🏭 sectors, 📊 stocks (only when the
