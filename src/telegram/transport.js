@@ -297,30 +297,51 @@ export class BotApiTransport {
     throw lastError;
   }
 
-  async sendPhoto(filePath, caption = '', meta = {}) {
+  /**
+   * Upload a local file to the Bot API.
+   *
+   * Node's global fetch (undici) only serialises the *web* FormData/File — a
+   * `form-data` (stream) object has no boundary header, so Telegram would reply
+   * "there is no photo in the request". Read the file and hand over a File.
+   */
+  async _postFile(endpoint, fieldName, filePath, caption, meta = {}) {
     if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN not configured');
     if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
+
     const fs = await import('node:fs');
-    const FormData = (await import('form-data')).default;
+    const path = await import('node:path');
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      throw new Error(`attachment missing or empty: ${filePath}`);
+    }
+    if (!stat.isFile() || stat.size === 0) {
+      throw new Error(`attachment missing or empty: ${filePath}`);
+    }
+
+    const type =
+      endpoint === 'sendPhoto'
+        ? 'image/png'
+        : filePath.toLowerCase().endsWith('.pdf')
+          ? 'application/pdf'
+          : 'application/octet-stream';
+
     const form = new FormData();
     form.append('chat_id', String(this.chatId));
     if (caption) form.append('caption', caption);
     form.append('parse_mode', 'HTML');
-    form.append('photo', fs.createReadStream(filePath));
-    return this._postMultipart('sendPhoto', form, meta);
+    form.append(fieldName, new File([fs.readFileSync(filePath)], path.basename(filePath), { type }));
+
+    return this._postMultipart(endpoint, form, meta);
+  }
+
+  async sendPhoto(filePath, caption = '', meta = {}) {
+    return this._postFile('sendPhoto', 'photo', filePath, caption, meta);
   }
 
   async sendDocument(filePath, caption = '', meta = {}) {
-    if (!this.botToken) throw new Error('TELEGRAM_BOT_TOKEN not configured');
-    if (!this.chatId) throw new Error('TELEGRAM_CHAT_ID not configured');
-    const fs = await import('node:fs');
-    const FormData = (await import('form-data')).default;
-    const form = new FormData();
-    form.append('chat_id', String(this.chatId));
-    if (caption) form.append('caption', caption);
-    form.append('parse_mode', 'HTML');
-    form.append('document', fs.createReadStream(filePath));
-    return this._postMultipart('sendDocument', form, meta);
+    return this._postFile('sendDocument', 'document', filePath, caption, meta);
   }
 }
 
