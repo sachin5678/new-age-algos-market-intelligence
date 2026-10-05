@@ -31,6 +31,14 @@ on:
         type: boolean
         required: false
         default: false
+      target:
+        description: 'Where a manual run posts. The schedule always posts to production.'
+        type: choice
+        required: false
+        default: test
+        options:
+          - test
+          - live
 
 permissions:
   contents: read
@@ -51,7 +59,9 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Guard rail: a manual dispatch posts to the TEST group unless target=live.
+      # Only the schedule (no inputs at all) reaches the production channel.
+      TELEGRAM_CHAT_ID: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || github.event_name == 'workflow_dispatch' && '-1004497477393' || secrets.TELEGRAM_CHAT_ID }}
       NODE_ENV: production
 
     steps:
