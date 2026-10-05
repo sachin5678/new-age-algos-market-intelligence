@@ -55,6 +55,9 @@ jobs:
       # purely an input: omitted -> false -> real delivery.
       DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
       NO_AI_FLAG: ${{ github.event.inputs.no_ai == 'true' && '--no-ai' || '' }}
+      # Despite the name, this carries any OpenAI-compatible key. config/settings.json
+      # -> ai.baseUrl picks the endpoint; the secret name is unchanged so existing
+      # repo secrets and the health-check keep working.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
