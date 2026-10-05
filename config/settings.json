@@ -32,7 +32,6 @@
     "enabled": true,
     "model": "gemini-3.5-flash-lite",
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "apiKeyFile": "C:\\Users\\Admin\\.secrets\\gemini-key",
     "timeoutMs": 30000,
     "maxRetries": 4,
     "maxEventsPerRun": 20
