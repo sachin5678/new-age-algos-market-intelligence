@@ -18,6 +18,7 @@
     "render:closing": "node scripts/render-preview.mjs closing",
     "render:alert": "node scripts/render-preview.mjs alert",
     "short": "node scripts/make-short.mjs",
+    "recap": "node scripts/make-short.mjs --type recap",
     "test": "node --test"
   },
   "engines": {

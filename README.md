@@ -34,7 +34,7 @@ src/
   telegram/      alert + briefing formatting, transports (dry-run / JSON emit / gramjs later)
   store/         SQLite (node:sqlite) + in-memory store
   log/           structured stage logging with secret redaction
-  short/         Market → Short factory: script → edge-tts voice → scene PNGs → captions → ffmpeg MP4
+  short/         Market → Short factory (story + market-recap shorts, en/hinglish/hindi voice): script → edge-tts voice → scene PNGs → captions → ffmpeg MP4
   pipeline.js    stage orchestration (each stage is its own module)
   index.js       CLI entry
 test/            node:test unit + integration tests (offline fixtures)
@@ -363,9 +363,13 @@ event + verdict → script → voice → scene PNGs → burned captions → shor
 
 ```bash
 npm run short                  # newest store event → artifacts/shorts/run-<ts>/short.mp4 + meta.json
+npm run recap                  # today's market recap: top gainers/losers + candle charts + store news
 npm run short -- --demo        # labelled SAMPLE event, no store needed
 npm run short -- --event <id>  # a specific event
 npm run short -- --ai          # fresh (free-tier) AI verdict instead of the stored one
+npm run short -- --lang hinglish   # Hinglish voiceover (English visuals, Hinglish captions)
+npm run short -- --lang hindi      # Hindi voiceover (Devanagari narration, hi-IN voice)
+npm run recap  -- --type recap ... # recap: --lang works the same way
 npm run short -- --notify      # also send the MP4 to the Telegram content queue
 npm run short -- --voice en-IN-NeerjaNeural --rate +8%
 ```
@@ -375,6 +379,40 @@ Requirements (all free, one-time local setup):
 - `edge-tts` — `pip install edge-tts` (free neural TTS, emits SRT timings)
 - `ffmpeg`/`ffprobe` — discovered via `PATH` or `%LOCALAPPDATA%\ffmpeg` (or set `FFMPEG_PATH`)
 - Chrome/Edge — already used by the briefing renderer
+
+### Hinglish / Hindi narration (`--lang`)
+
+- **On-screen text stays English** (punchy, fast to read — standard for Indian
+  finance Shorts); what changes is the spoken narration, which flows into
+  edge-tts and therefore into the burned captions automatically.
+- Rewrite order: **free Gemini tier** (`settings.ai`, `langMode: ai`) →
+  deterministic **lexicon fallback** when no key is configured (`langMode: lexicon`).
+  CTA + "why it matters" are per-language templates; recap narration is fully
+  template-based (`langMode: template`), so recap shorts never need the AI.
+- Voice presets: `en`/`hinglish` → `en-IN-PrabhatNeural` (reads Romanized
+  Hinglish well), `hindi` → `hi-IN-MadhurNeural` (Devanagari). Override with `--voice`.
+
+### Market recap (`--type recap` / `npm run recap`)
+
+A second short type built from live data instead of a single event:
+
+```
+top gainers/losers + index pulse + store news → scenes with candle charts → short.mp4
+```
+
+| Stage | Module | Free source |
+|---|---|---|
+| Movers + index pulse | `src/short/marketData.js` | Yahoo Finance public chart API (keyless; NSE site/MCP were unreliable — 404s / empty at close) |
+| News on a mover | `src/short/marketData.js` | the pipeline's own store events (title/description/company match) |
+| Candlestick chart | `src/short/charts.js` | deterministic inline SVG themed by the central theme |
+| Scenes (hook + movers + CTA) | `src/short/recap.js` + `src/short/scenes.js` | template narration per language, no AI call |
+
+- Scene flow: `MARKET RECAP` hook (NIFTY 50 / NIFTY BANK / SENSEX pulse) →
+  top 3 gainers + top 3 losers (rank chip, % move, close, 20-session candle
+  chart, NEWS strip when the store has a matching event) → brand CTA.
+- Failed quotes are skipped, never fabricated; zero movers (Yahoo unreachable)
+  fails with a hint to use `--demo`. `npm run recap -- --demo` renders a
+  labelled SAMPLE fixture with synthetic candles.
 
 ### Outputs per run
 
@@ -389,5 +427,5 @@ Requirements (all free, one-time local setup):
 - **QA gate before delivery** — duration 18–75s, exact 1080×1920, h264+aac, size floor
 - **Scene ↔ speech sync** — TTS word timings map each scene to its spoken window (proportional fallback if text diverges)
 - **Same visual system as briefings** — central theme, no hard-coded colors (§27), deterministic rendering
-- **No AI visuals, no paid API anywhere** — script text comes from the stored verdict; voice/scenes/video are local free tools
+- **No AI visuals, no paid API anywhere** — script text comes from the stored verdict (the only model call in the chain is the optional free-tier Hinglish/Hindi rewrite); voice/scenes/video are local free tools
 - **Caption zone reserved** — scene layout keeps the bottom band clear of the Shorts UI

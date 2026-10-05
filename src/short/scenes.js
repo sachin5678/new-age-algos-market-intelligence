@@ -17,6 +17,14 @@
  */
 
 import { theme, baseCss, esc, VISUAL_DEFAULTS } from '../visual/theme.js';
+import { candleChartSvg } from './charts.js';
+import { clip } from './script.js';
+
+/** Indian-format number for scene rows (guarded — QA bans NaN). */
+function fmtVal(v, dec = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toLocaleString('en-IN', { maximumFractionDigits: dec }) : '—';
+}
 
 export const SHORT_DIMS = Object.freeze({ width: 1080, height: 1920, scale: 2 });
 
@@ -83,6 +91,43 @@ export function shortCss() {
   text-transform:uppercase}
 .sh-cta .handle{font-size:${t.headline + 2}px;font-weight:700;color:${c.text};
   letter-spacing:.06em;margin-top:6px}
+
+/* recap hook: index pulse */
+.sh-pulse{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:18px}
+.sh-idx{background:${c.card};border:1px solid ${c.border};border-radius:10px;
+  padding:9px 10px;min-width:0}
+.sh-idx-n{display:block;font-size:${t.meta - 1}px;font-weight:700;letter-spacing:.06em;
+  color:${c.muted};text-transform:uppercase;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+.sh-idx-v{display:block;font-size:${t.body + 4}px;font-weight:750;margin-top:3px;
+  font-variant-numeric:tabular-nums;color:${c.text}}
+.sh-idx-d{display:block;font-size:${t.meta}px;font-weight:800;margin-top:1px;
+  font-variant-numeric:tabular-nums}
+.m-up{color:${c.positive}}
+.m-down{color:${c.negative}}
+
+/* recap mover scene */
+.sh-sym{display:flex;align-items:baseline;gap:10px;min-width:0}
+.sh-sym .sym{font-size:33px;font-weight:800;letter-spacing:.03em;color:${c.text};
+  white-space:nowrap}
+.sh-sym .co{font-size:${t.meta + 1}px;font-weight:600;color:${c.muted};
+  letter-spacing:.06em;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.sh-pctrow{display:flex;align-items:baseline;gap:12px}
+.sh-pct{font-size:54px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.sh-price{font-size:${t.body + 2}px;color:${c.muted};font-weight:600;
+  font-variant-numeric:tabular-nums}
+.sh-chart{margin-top:4px;line-height:0}
+.sh-news{display:flex;gap:8px;align-items:flex-start;background:${c.surface};
+  border:1px solid ${c.border};border-left:3px solid ${c.warning};border-radius:8px;
+  padding:7px 9px;min-width:0}
+.sh-news-tag{flex:none;font-size:${t.meta - 2}px;font-weight:800;letter-spacing:.1em;
+  color:${c.warning};padding-top:2px}
+.sh-news-body{min-width:0}
+.sh-news-txt{font-size:${t.body - 1}px;line-height:1.25;color:${c.text};
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sh-news-src{font-size:${t.meta - 2}px;color:${c.muted};margin-top:2px;
+  letter-spacing:.04em}
 `;
 }
 
@@ -108,6 +153,65 @@ function footer(meta) {
 }
 
 function body(scene, meta) {
+  if (scene.kind === 'recap') {
+    const pulse = (Array.isArray(scene.pulse) ? scene.pulse : []).slice(0, 3);
+    const idx = pulse
+      .map(
+        (p) => `
+    <div class="sh-idx">
+      <span class="sh-idx-n">${esc(p.name)}</span>
+      <span class="sh-idx-v">${fmtVal(p.value)}</span>
+      <span class="sh-idx-d ${Number(p.pct) >= 0 ? 'm-up' : 'm-down'}">${
+        Number(p.pct) >= 0 ? '+' : '−'
+      }${Math.abs(Number(p.pct) || 0).toFixed(1)}%</span>
+    </div>`
+      )
+      .join('');
+    return `
+<div class="sh-body">
+  <span class="sh-badge">Market recap</span>
+  <div class="sh-text sh-hook">${esc(scene.text)}</div>
+  ${idx ? `<div class="sh-pulse">${idx}</div>` : ''}
+  ${meta.sample ? '<span class="sample">SAMPLE / TEST DATA</span>' : ''}
+</div>`;
+  }
+
+  if (scene.kind === 'mover') {
+    const up = scene.dir === 'up';
+    const chart = candleChartSvg({ candles: scene.candles, width: 488, height: 190 });
+    const news = scene.news
+      ? `
+  <div class="sh-news">
+    <span class="sh-news-tag">NEWS</span>
+    <div class="sh-news-body">
+      <div class="sh-news-txt">${esc(clip(scene.news.title, 120))}</div>
+      ${scene.news.source ? `<div class="sh-news-src">${esc(scene.news.source)}</div>` : ''}
+    </div>
+  </div>`
+      : '';
+    return `
+<div class="sh-body">
+  <div class="sh-chips"><span class="impact ${up ? 'i-positive' : 'i-negative'}">${esc(
+    scene.rank ?? (up ? 'GAINER' : 'LOSER')
+  )}</span></div>
+  <div class="sh-sym"><span class="sym">${esc(scene.symbol)}</span>${
+    scene.name &&
+    scene.name.replace(/[^A-Za-z0-9]/g, '').toUpperCase() !==
+      String(scene.symbol ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+      ? `<span class="co">${esc(scene.name)}</span>`
+      : ''
+  }</div>
+  <div class="sh-pctrow">
+    <span class="sh-pct ${up ? 'm-up' : 'm-down'}">${up ? '+' : '−'}${Math.abs(
+      Number(scene.pct) || 0
+    ).toFixed(1)}%</span>
+    <span class="sh-price">₹${fmtVal(scene.price, 2)} close</span>
+  </div>
+  ${chart ? `<div class="sh-chart">${chart}</div>` : ''}
+  ${news}
+</div>`;
+  }
+
   if (scene.kind === 'hook') {
     const impact = IMPACT_LABEL[meta.impact] ? meta.impact : 'unclear';
     const chips = [

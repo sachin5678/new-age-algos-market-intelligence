@@ -17,8 +17,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { buildShort } from './script.js';
-import { synthSpeech, parseSrt, estimateWordTimings, matchSegments, DEFAULT_VOICE } from './voice.js';
+import { buildShort, DEFAULT_HASHTAGS } from './script.js';
+import { buildRecapShort } from './recap.js';
+import { rewriteNarration, voiceForLang, normalizeLang } from './lang.js';
+import { synthSpeech, parseSrt, estimateWordTimings, matchSegments } from './voice.js';
 import { buildCaptionChunks, buildAss } from './captions.js';
 import { renderSceneHtml, SHORT_DIMS } from './scenes.js';
 import {
@@ -33,6 +35,7 @@ import { renderPng, validateImage } from '../visual/render.js';
 import { fmtDateShort } from '../visual/components.js';
 
 export { buildShort } from './script.js';
+export { buildRecapShort } from './recap.js';
 export { SHORT_DIMS } from './scenes.js';
 
 const TAIL_SEC = 0.7; // hold on the outro after the last spoken word
@@ -63,13 +66,18 @@ function normalizeDurations(durs) {
 }
 
 /**
- * Produce one short from an event + verdict.
+ * Produce one short from an event + verdict (type "story") or from recap
+ * market data (type "recap").
  *
  * @param {object} args
- * @param {object} args.event    store event
- * @param {object} args.verdict  AI/rules verdict
+ * @param {object} [args.event]    store event (story type)
+ * @param {object} [args.verdict]  AI/rules verdict (story type)
+ * @param {'story'|'recap'} [args.type]
+ * @param {'en'|'hinglish'|'hindi'} [args.lang] spoken narration language
+ * @param {object} [args.settings] loadConfig() settings (AI access for lang)
+ * @param {object} [args.recap]    {gainers, losers, pulse, events, date, sample}
  * @param {string} args.outRoot  artifacts/shorts
- * @param {string} [args.voice]  edge-tts voice id
+ * @param {string} [args.voice]  explicit edge-tts voice id (overrides lang preset)
  * @param {string} [args.rate]   TTS rate like "+6%"
  * @param {boolean} [args.notify] send "content ready" to Telegram (Bot API)
  * @param {object} [args.logger]
@@ -78,14 +86,20 @@ function normalizeDurations(durs) {
 export async function makeShort({
   event,
   verdict,
+  type = 'story',
+  lang = 'en',
+  settings = null,
+  recap = null,
   outRoot,
-  voice = DEFAULT_VOICE,
+  voice = null,
   rate = '+6%',
   notify = false,
   handle = '@newageAlgos',
   logger = console,
 } = {}) {
   const started = Date.now();
+  const L = normalizeLang(lang);
+  const resolvedVoice = voiceForLang(L, voice);
   const runId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   const dir = path.join(outRoot, `run-${runId}`);
   fs.mkdirSync(dir, { recursive: true });
@@ -93,18 +107,38 @@ export async function makeShort({
   const log = (phase, msg, extra = {}) => logger.info?.(`SHORT ${phase}`, msg, extra) ?? void 0;
 
   // 1 ── script -----------------------------------------------------------
-  const short = buildShort({ event, verdict, handle });
+  let short;
+  let langMode = 'template';
+  if (type === 'recap') {
+    if (!recap) throw new Error('recap data required for type=recap');
+    short = buildRecapShort({ ...recap, lang: L, handle });
+  } else {
+    short = buildShort({ event, verdict, handle });
+    const re = await rewriteNarration({ scenes: short.scenes, lang: L, settings });
+    langMode = re.mode;
+    if (re.mode !== 'en') {
+      short = {
+        ...short,
+        scenes: re.scenes,
+        narration: re.scenes.map((s) => s.speech).join(' '),
+      };
+    }
+  }
   if (!short.narration) throw new Error('empty narration — nothing to synthesize');
-  log('SCRIPT', `${short.scenes.length} scenes, ${short.narration.split(/\s+/).length} words`);
+  log('SCRIPT', `${short.scenes.length} scenes, ${short.narration.split(/\s+/).length} words`, {
+    type,
+    lang: L,
+    langMode,
+  });
 
   // 2 ── voice ------------------------------------------------------------
   const audio = path.join(dir, 'voice.mp3');
-  await synthSpeech({ text: short.narration, outFile: audio, voice, rate });
+  await synthSpeech({ text: short.narration, outFile: audio, voice: resolvedVoice, rate });
   const cues = parseSrt(fs.readFileSync(audio.replace(/\.mp3$/, '.srt'), 'utf8'));
   const words = estimateWordTimings(cues);
   const audioInfo = ffprobeInfo(audio);
   if (!(audioInfo.duration > 1)) throw new Error('TTS produced no usable audio');
-  log('VOICE', `${voice} → ${audioInfo.duration.toFixed(1)}s, ${words.length} words`);
+  log('VOICE', `${resolvedVoice} → ${audioInfo.duration.toFixed(1)}s, ${words.length} words`);
 
   // 3 ── scene timing -----------------------------------------------------
   const boundaries = matchSegments(short.scenes, words).map((t) => t.start);
@@ -121,8 +155,14 @@ export async function makeShort({
     importance: short.importance,
     source: short.source,
     handle: short.handle,
-    date: fmtDateShort(new Date(event.published_at ?? event.detected_at ?? Date.now())),
-    sample: Boolean(event.sample),
+    date: fmtDateShort(
+      new Date(
+        type === 'recap'
+          ? recap.date ?? Date.now()
+          : event.published_at ?? event.detected_at ?? Date.now()
+      )
+    ),
+    sample: type === 'recap' ? Boolean(recap.sample) : Boolean(event.sample),
   };
   const scenes = [];
   for (let i = 0; i < short.scenes.length; i += 1) {
@@ -162,16 +202,19 @@ export async function makeShort({
   const summary = {
     ok: true,
     runId,
+    type,
+    lang: L,
+    langMode,
     dir,
     video,
     durationSec: Number(probe.duration.toFixed(2)),
     bytes: probe.size,
     scenes: scenes.map((s) => ({ kind: s.kind, dur: Number(s.dur.toFixed(2)), png: s.png })),
-    eventId: event.event_id ?? null,
+    eventId: type === 'recap' ? null : (event.event_id ?? null),
     title: short.title,
     description: short.description,
     hashtags: short.hashtags,
-    voice,
+    voice: resolvedVoice,
     elapsedSec: Number(((Date.now() - started) / 1000).toFixed(1)),
     qa: gate.problems,
   };

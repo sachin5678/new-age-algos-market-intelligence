@@ -18,7 +18,7 @@
 
 const MAX_FACTS = 3;
 const DEFAULT_HANDLE = '@newageAlgos';
-const DEFAULT_HASHTAGS = [
+export const DEFAULT_HASHTAGS = [
   '#nifty',
   '#stockmarket',
   '#indianstockmarket',
@@ -27,7 +27,7 @@ const DEFAULT_HASHTAGS = [
 ];
 
 /** Clip to n chars on a word boundary; append an ellipsis when clipped. */
-function clip(value, n) {
+export function clip(value, n) {
   const s = String(value ?? '').trim();
   if (s.length <= n) return s;
   const cut = s.slice(0, n);
@@ -36,7 +36,7 @@ function clip(value, n) {
 }
 
 /** Make a fragment a spoken sentence (TTS pauses on the full stop). */
-function sentence(value) {
+export function sentence(value) {
   const s = String(value ?? '').trim().replace(/\s+/g, ' ');
   if (!s) return '';
   return /[.!?…]$/.test(s) ? s : `${s}.`;
