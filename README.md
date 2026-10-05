@@ -434,6 +434,10 @@ One-time Google setup (~3 minutes, follow the steps the script prints):
    `~/.secrets/youtube-client.json`
 4. `node scripts/youtube-auth.mjs` → approve in the browser once → the refresh
    token is stored in `~/.secrets/youtube-auth.json` (gitignored)
+5. For **CI uploads** (the scheduled runs), also add the same values as repo
+   secrets — GitHub repo → Settings → Secrets and variables → Actions →
+   `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`
+   (+ optional `YOUTUBE_PRIVACY`) — `loadCredentials` reads them from env
 
 Guarantees:
 
@@ -444,23 +448,35 @@ Guarantees:
 - **Samples never upload** — demo/labelled test data stays on disk (§27)
 - Thumbnail = hook-scene PNG (soft-fail if >2 MB); `YOUTUBE_PRIVACY=public|unlisted|private`
 
-### Twice-daily schedule (Windows tasks)
+### Twice-daily schedule (cron-job.org → GitHub Actions)
 
-Two registered tasks run the whole chain automatically (Mon–Fri, IST clock):
+The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
+`short-factory.yml`** — cloud runs, PC not required:
 
-| Task | When | What |
+| cron-job.org job | Fires (Mon–Fri) | Dispatches |
 |---|---|---|
-| `NewAgeShorts-Story` | 09:00 | store refresh (`market-check --dry-run`, fetch + store, no sends) → **story** short, Hinglish → upload → backfill |
-| `NewAgeShorts-Recap` | 16:15 | same refresh → **recap** short of the day's top movers, Hinglish → upload → backfill |
+| `New Age Algos \| Story Short (09:00 IST)` | 09:00 IST | `short-factory.yml` `type=story lang=hinglish upload=true` |
+| `New Age Algos \| Recap Short (16:15 IST)` | 16:15 IST | `short-factory.yml` `type=recap lang=hinglish upload=true` |
 
-- Wrapper: `scripts/scheduled-short.ps1` (per-run log in `logs/scheduled-*.log`,
-  newest 40 kept; exit 0 = fine/auth-pending/holiday, 1 = render failed,
-  3 = upload failed — the MP4 is still on disk either way)
-- Re-register after moving the repo: `scripts/register-short-tasks.ps1`
-- Language lives in one line of the wrapper (`-Lang hinglish` → change to
-  `en`/`hindi` if you prefer)
-- The machine must be on and you logged in (InteractiveToken) at those times;
-  `StartWhenAvailable` catches missed runs after wake-up
+Each CI run: `apt ffmpeg` + `pip --user edge-tts` (both free) → restore the
+shared `market-state-` cache (fresh events **and** the upload registry) →
+`make-short --type … --upload` → save state back → publish the
+`short-<type>-<run_id>` artifact (MP4 + meta + SRT, kept 7 days).
+
+- Stories read events the pipeline collected the same morning (08:30 pre-market
+  run feeds the 09:00 story); recaps read the 15:45 closing run's state
+- No YouTube secrets yet → logs "not authorised" and still renders — the
+  consent step never blocks rendering
+- Change time/language: edit the two jobs in the cron-job.org console (API:
+  `PATCH /api/jobs/<id>`) or the `lang` default in `short-factory.yml`
+
+**Local fallback (registered, disabled):** Windows tasks
+`NewAgeShorts-Story` / `NewAgeShorts-Recap` + wrapper
+`scripts/scheduled-short.ps1` (logs in `logs/`). Re-enable with
+`schtasks /Change /TN NewAgeShorts-Story /ENABLE` or re-register via
+`scripts/register-short-tasks.ps1`. ⚠️ Never run both at once — local and CI
+keep **separate** dedup registries → double uploads. Once CI owns publishing,
+skip manual `--upload-all` from this machine too.
 
 ### Outputs per run
 
