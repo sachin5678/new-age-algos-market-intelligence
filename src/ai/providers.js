@@ -10,6 +10,24 @@ export const AI_STATUS = {
   AWAITING_CONFIRMATION: 'awaiting_confirmation'
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Exponential backoff with jitter for rate limits.
+ * Honours Retry-After when the provider sends one (Gemini does), otherwise
+ * ramps 2s -> 4s -> 8s -> 16s. Capped so one call can never blow the
+ * workflow's 30-minute timeout. `baseMs` is configurable so tests (and a
+ * provider with different pacing needs) can tune it.
+ */
+function backoffMs(attempt, retryAfterSec, baseMs = 2000) {
+  if (Number.isFinite(retryAfterSec) && retryAfterSec > 0) {
+    return Math.min(retryAfterSec, 30) * 1000;
+  }
+  const safeBase = Math.max(1, baseMs);
+  const exp = Math.min(safeBase * 8, safeBase * 2 ** (attempt - 1));
+  return exp + Math.floor(Math.random() * (safeBase * 0.375 + 1));
+}
+
 class BaseAIProvider {
   constructor({ name, settings, logger = null } = {}) {
     this.name = name;
@@ -53,31 +71,99 @@ class OpenAIProvider extends BaseAIProvider {
     }
 
     try {
-      const res = await this.fetchImpl('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: cfg.model ?? 'gpt-4o-mini',
-          temperature: 0.2,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: this._buildSystemPrompt() },
-            { role: 'user', content: JSON.stringify(this._buildUserPayload(event, ctx), null, 2) },
-          ],
-        }),
-        signal: AbortSignal.timeout(cfg.timeoutMs ?? 30000),
-      });
+      const res = await this._postWithRetry(
+        this._endpoint(),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            model: cfg.model ?? 'gpt-4o-mini',
+            temperature: 0.2,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: this._buildSystemPrompt() },
+              { role: 'user', content: JSON.stringify(this._buildUserPayload(event, ctx), null, 2) },
+            ],
+          }),
+        },
+        cfg
+      );
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
       if (!content) throw new Error('empty completion');
       const parsed = JSON.parse(content);
       return this._coerceVerdict(parsed, event);
     } catch (err) {
-      this.logger?.warn('AI_ANALYZE', `OpenAI failed (${err.message})`);
+      this.logger?.warn('AI_ANALYZE', `${this._endpointHost()} failed (${err.message})`);
       throw err;
     }
+  }
+
+  /**
+   * Chat-completions endpoint. Configurable so OpenAI-compatible providers
+   * work unchanged (Gemini, Groq, OpenRouter). A trailing slash is tolerated.
+   */
+  _endpoint() {
+    const base = String(this.settings.ai?.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+    return `${base}/chat/completions`;
+  }
+
+  _endpointHost() {
+    try {
+      return new URL(this._endpoint()).host;
+    } catch {
+      return 'ai';
+    }
+  }
+
+  /**
+   * POST with retry on rate limits and transient failures.
+   *
+   * Retry matters here: the provider chain treats ANY throw as "this provider
+   * is broken" and silently degrades to the rules-only verdict, which always
+   * sets confidence=low and is then rejected as unverified. So a single 429
+   * would quietly disable alerting for that event — exactly what Google's docs
+   * say not to do (they prescribe wait-and-retry for 429).
+   */
+  async _postWithRetry(url, init, cfg) {
+    const maxRetries = cfg.maxRetries ?? 4;
+    const baseMs = cfg.backoffBaseMs ?? 2000;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      let res;
+      try {
+        res = await this.fetchImpl(url, {
+          ...init,
+          signal: AbortSignal.timeout(cfg.timeoutMs ?? 30000),
+        });
+      } catch (err) {
+        lastError = err;
+        if (attempt === maxRetries) throw err;
+        await sleep(backoffMs(attempt + 1, null, baseMs));
+        continue;
+      }
+
+      if (res.ok) return res;
+
+      // Test doubles and real Responses both optional-chain cleanly here.
+      let body = '';
+      try {
+        if (typeof res.text === 'function') body = await res.text();
+      } catch {
+        body = '';
+      }
+      lastError = new Error(`HTTP ${res.status}${body ? `: ${body.slice(0, 300)}` : ''}`);
+
+      const retryable = res.status === 429 || res.status >= 500;
+      if (!retryable || attempt === maxRetries) throw lastError;
+
+      const retryAfter = Number(res.headers?.get?.('retry-after'));
+      await sleep(backoffMs(attempt + 1, retryAfter, baseMs));
+    }
+
+    throw lastError ?? new Error('request failed');
   }
 
   async _readKey() {

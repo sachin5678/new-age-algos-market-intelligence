@@ -102,7 +102,25 @@ body must literally contain `"target":"live"`.
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | Bot API delivery in CI (stateless — no session file to carry between runs) |
 | `TELEGRAM_CHAT_ID` | yes | Target chat/channel — production uses the main channel `-1003067155583` (@newagealgos) |
-| `OPENAI_API_KEY` | optional | AI classification; without it the pipeline runs rules-only |
+| `OPENAI_API_KEY` | optional | AI classification. Despite the name it accepts **any OpenAI-compatible key** — see below |
+
+**AI provider (OpenAI-compatible)**
+
+`config/settings.json` → `ai`:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `baseUrl` | `https://api.openai.com/v1` | Any OpenAI-compatible endpoint — Gemini `https://generativelanguage.googleapis.com/v1beta/openai`, Groq `https://api.groq.com/openai/v1`, OpenRouter `https://openrouter.ai/api/v1` |
+| `model` | `gpt-4o-mini` | Model id at that endpoint |
+| `maxRetries` | `4` | Retries `429`/`5xx` with exponential backoff + jitter; honours `Retry-After` |
+| `backoffBaseMs` | `2000` | Backoff base: 2s → 4s → 8s → 16s |
+| `maxEventsPerRun` | `20` | Hard cap on AI calls per run |
+
+Retries are load-bearing: without them a single `429` makes the provider chain
+fall through to `RulesOnlyProvider`, which always emits `confidence: "low"` — and
+`shouldPublish` then rejects the event as `unverified`. One rate limit would
+silently disable alerting for that event, which is why the code waits and retries
+instead (Google's prescribed handling for `429`).
 
 The bot must be an **administrator of the channel** with *Post messages* right.
 

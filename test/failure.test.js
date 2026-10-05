@@ -151,6 +151,122 @@ test('AI service validates and coerces structured output', async () => {
   assert.equal(v.fallback_reason, null);
 });
 
+test('AI endpoint is configurable (Gemini/Groq/OpenRouter compatible)', async () => {
+  const urls = [];
+  const ai = createOpenAIService({
+    settings: {
+      ...cfg.settings,
+      ai: {
+        ...cfg.settings.ai,
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        backoffBaseMs: 1,
+      },
+    },
+    apiKey: 'test-key',
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"confidence":"high","is_material":true}' } }],
+        }),
+      };
+    },
+  });
+  const v = await ai.analyze({
+    title: 'SEBI issues circular on margin norms',
+    importance_level: 'HIGH',
+    companies: [],
+    sectors: [],
+  });
+  assert.equal(v.analysis_source, 'openai');
+  assert.equal(urls.length, 1);
+  // Trailing slash in config must not produce a doubled slash in the URL.
+  assert.equal(
+    urls[0],
+    'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'
+  );
+});
+
+test('defaults to the OpenAI endpoint when baseUrl is absent', async () => {
+  const urls = [];
+  const ai = createOpenAIService({
+    settings: {
+      ...cfg.settings,
+      ai: { ...cfg.settings.ai, backoffBaseMs: 1 },
+    },
+    apiKey: 'test-key',
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"confidence":"high","is_material":true}' } }],
+        }),
+      };
+    },
+  });
+  await ai.analyze({ title: 'x', importance_level: 'HIGH', companies: [], sectors: [] });
+  assert.equal(urls[0], 'https://api.openai.com/v1/chat/completions');
+});
+
+test('a 429 rate limit is retried, not silently downgraded to rules', async () => {
+  let calls = 0;
+  const ai = createOpenAIService({
+    settings: { ...cfg.settings, ai: { ...cfg.settings.ai, backoffBaseMs: 1 } },
+    apiKey: 'test-key',
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls < 3) {
+        return { ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: '{"confidence":"high","is_material":true}' } }],
+        }),
+      };
+    },
+  });
+  const v = await ai.analyze({ title: 'x', importance_level: 'HIGH', companies: [], sectors: [] });
+  assert.equal(calls, 3, 'expected two rate-limited attempts then success');
+  assert.equal(v.analysis_source, 'openai');
+  assert.equal(v.confidence, 'high');
+  assert.equal(v.fallback_reason, null);
+});
+
+test('a non-retryable error fails immediately instead of backing off', async () => {
+  let calls = 0;
+  const ai = createOpenAIService({
+    settings: { ...cfg.settings, ai: { ...cfg.settings.ai, backoffBaseMs: 1 } },
+    apiKey: 'test-key',
+    fetchImpl: async () => {
+      calls += 1;
+      return { ok: false, status: 401, headers: { get: () => null }, text: async () => 'invalid key' };
+    },
+  });
+  const v = await ai.analyze({ title: 'x', importance_level: 'HIGH', companies: [], sectors: [] });
+  assert.equal(calls, 1, '401 must not be retried');
+  assert.equal(v.analysis_source, 'rules_only');
+  assert.equal(v.confidence, 'low');
+});
+
+test('persistent rate limiting exhausts retries, then falls back to rules', async () => {
+  let calls = 0;
+  const ai = createOpenAIService({
+    settings: { ...cfg.settings, ai: { ...cfg.settings.ai, maxRetries: 3, backoffBaseMs: 1 } },
+    apiKey: 'test-key',
+    fetchImpl: async () => {
+      calls += 1;
+      return { ok: false, status: 429, headers: { get: () => null }, text: async () => 'rate limited' };
+    },
+  });
+  const v = await ai.analyze({ title: 'x', importance_level: 'HIGH', companies: [], sectors: [] });
+  assert.equal(calls, 4, 'one initial attempt plus three retries');
+  assert.equal(v.analysis_source, 'rules_only');
+  assert.equal(v.confidence, 'low');
+});
+
 test('AI service can be disabled entirely', async () => {
   const ai = createOpenAIService({
     settings: { ...cfg.settings, ai: { ...cfg.settings.ai, enabled: false } },
