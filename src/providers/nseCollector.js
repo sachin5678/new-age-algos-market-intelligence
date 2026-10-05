@@ -194,6 +194,11 @@ import json
 import sys
 
 symbols = {
+    # Indian indices first: the direct NSE API 404s from CI runners, so
+    # marketPulse fell back to N/A on every briefing without these.
+    "NIFTY 50": "^NSEI",
+    "BANK NIFTY": "^NSEBANK",
+    "SENSEX": "^BSESN",
     "S&P 500": "^GSPC",
     "Nasdaq": "^IXIC",
     "Dow Jones": "^DJI",

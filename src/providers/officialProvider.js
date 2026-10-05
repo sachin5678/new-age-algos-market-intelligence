@@ -25,7 +25,15 @@ export class OfficialAnnouncementProvider extends Provider {
 
     const enabled = this.sources.filter((s) => s.enabled !== false && s.url);
     if (enabled.length) {
-      const feeds = enabled.map((s) => ({ ...s, tier: s.tier ?? 1, sourceType: 'official' }));
+      // official_sources.json calls the field `name`; http.js reads `source`.
+      // Normalise here so a feed added later gets a real label instead of the
+      // literal "undefined" appearing in COLLECT warnings and in item provenance.
+      const feeds = enabled.map((s) => ({
+        ...s,
+        source: s.source ?? s.name,
+        tier: s.tier ?? 1,
+        sourceType: 'official',
+      }));
       const { raws } = await fetchFeeds(feeds, { fetchImpl: this.fetchImpl, timeoutMs: this.timeoutMs, logger, label: 'official feed' });
       items.push(...normalizeRaw(raws, this.categorizer, this.extractor).map((a) => ({ ...a, source_type: 'official', trust_tier: a.trust_tier || 1 })));
     }

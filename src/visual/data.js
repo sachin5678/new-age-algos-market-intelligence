@@ -314,7 +314,7 @@ export function usedSources({ developments = [], snapshots = [] } = {}) {
 /** Structured movers split by sign (§18 top gainers / losers). */
 export function moversFromSnapshots(snapshots = [], cap = 4) {
   const indexLike =
-    /^(nifty|s&p|dow|nasdaq|nikkei|hang|shanghai|usd|brent|crude|gold|fii|dii|advance|decline|gift|sensex)/i;
+    /^(bank\s*nifty|nifty|s&p|dow|nasdaq|nikkei|hang|shanghai|usd|brent|crude|gold|fii|dii|advance|decline|gift|sensex)/i;
   const rows = snapshots
     .filter((s) => !indexLike.test(String(s.name)) && typeof s.pct_change === 'number')
     .map((s) => ({

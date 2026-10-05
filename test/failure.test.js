@@ -190,10 +190,13 @@ test('AI endpoint is configurable (Gemini/Groq/OpenRouter compatible)', async ()
 
 test('defaults to the OpenAI endpoint when baseUrl is absent', async () => {
   const urls = [];
+  // config/settings.json now ships a Gemini baseUrl, so strip it explicitly
+  // instead of depending on what the committed config happens to contain.
+  const { baseUrl: _stripped, ...aiWithoutBase } = cfg.settings.ai;
   const ai = createOpenAIService({
     settings: {
       ...cfg.settings,
-      ai: { ...cfg.settings.ai, backoffBaseMs: 1 },
+      ai: { ...aiWithoutBase, backoffBaseMs: 1 },
     },
     apiKey: 'test-key',
     fetchImpl: async (url) => {
