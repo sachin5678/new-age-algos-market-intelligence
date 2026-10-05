@@ -89,6 +89,7 @@ jobs:
             state/market.db
             state/inbox
             state/logs
+            state/youtube-uploads.json
           key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             market-state-
@@ -132,6 +133,7 @@ jobs:
             state/market.db
             state/inbox
             state/logs
+            state/youtube-uploads.json
           key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload visual briefings

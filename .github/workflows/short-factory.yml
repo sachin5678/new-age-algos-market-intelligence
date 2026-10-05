@@ -1,0 +1,108 @@
+name: Short Factory
+
+on:
+  # NOTE: no `schedule:` here — same reason as market-intelligence.yml: GitHub's
+  # scheduler never fired reliably for this account, so cron-job.org is the sole
+  # scheduler. It dispatches this workflow twice a day (Mon-Fri, IST):
+  #   09:00 -> type=story   16:15 -> type=recap
+  # The per-job schedules live in the cron-job.org console, not here.
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 'Short type'
+        type: choice
+        required: true
+        options:
+          - story
+          - recap
+      lang:
+        description: 'Spoken narration language'
+        type: choice
+        required: false
+        default: hinglish
+        options:
+          - hinglish
+          - en
+          - hindi
+      upload:
+        description: 'Publish to YouTube after rendering (free Data API v3)'
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # Empty until the one-time Google consent is done (scripts/youtube-auth.mjs)
+      # + these secrets are set — the run then logs "not authorised" and still
+      # renders the MP4 + artifact, so rendering is never blocked on that.
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+      YOUTUBE_PRIVACY: ${{ secrets.YOUTUBE_PRIVACY }}
+      NODE_ENV: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install ffmpeg and edge-tts (free assembly + free neural TTS)
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          python3 -m pip install --user edge-tts
+          # edge-tts console script lands in ~/.local/bin for --user installs
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Same cache chain market-intelligence.yml uses: stories read fresh events
+      # from it and the YouTube dedup registry (state/youtube-uploads.json)
+      # travels with it, so neither side can publish the same short twice.
+      - name: Restore state from cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state/market.db
+            state/inbox
+            state/logs
+            state/youtube-uploads.json
+          key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            market-state-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Render + publish short
+        run: |
+          ARGS="--type ${{ inputs.type }} --lang ${{ inputs.lang }}"
+          if [ "${{ inputs.upload }}" = "true" ]; then ARGS="$ARGS --upload"; fi
+          echo "make-short.mjs $ARGS"
+          node scripts/make-short.mjs $ARGS
+
+      - name: Save state to cache (fresh events + upload registry)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state/market.db
+            state/inbox
+            state/logs
+            state/youtube-uploads.json
+          key: market-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload finished short (mp4 + meta + srt)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-${{ inputs.type }}-${{ github.run_id }}
+          path: artifacts/shorts/
+          retention-days: 7
+          if-no-files-found: ignore
