@@ -211,6 +211,13 @@ export async function makeShort({
     bytes: probe.size,
     scenes: scenes.map((s) => ({ kind: s.kind, dur: Number(s.dur.toFixed(2)), png: s.png })),
     eventId: type === 'recap' ? null : (event.event_id ?? null),
+    sample: type === 'recap' ? Boolean(recap.sample) : Boolean(event.sample),
+    uploadKey:
+      type === 'recap'
+        ? `recap:${new Date(recap.date ?? Date.now()).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}`
+        : event.event_id
+          ? `event:${event.event_id}`
+          : null,
     title: short.title,
     description: short.description,
     hashtags: short.hashtags,

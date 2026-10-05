@@ -11,6 +11,9 @@
  *   npm run short -- --ai            → force a fresh (free-tier) AI verdict
  *   npm run short -- --notify        → also send the MP4 to the Telegram
  *                                       content queue (needs bot env vars)
+ *   npm run short -- --upload        → publish to YouTube (free Data API v3,
+ *                                       one-time auth via youtube-auth.mjs)
+ *   npm run short -- --upload-all    → publish every finished run not yet up
  *   npm run short -- --json          → machine-readable summary
  *
  * Flags: --type story|recap   --lang en|hinglish|hindi
@@ -24,12 +27,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { loadConfig, loadDotEnv, PROJECT_ROOT } from '../src/config.js';
+import { marketCalendar } from '../src/visual/data.js';
 import { openStore } from '../src/store/index.js';
 import { createOpenAIService, fallbackVerdict } from '../src/ai/openaiService.js';
 import { makeShort } from '../src/short/index.js';
 import { demoRecap } from '../src/short/recap.js';
 import { fetchMovers, fetchIndexPulse } from '../src/short/marketData.js';
 import { normalizeLang } from '../src/short/lang.js';
+import {
+  uploadShort,
+  uploadAllUnsent,
+  loadRegistry,
+  defaultRegistryFile,
+} from '../src/youtube.js';
 
 /** Labelled sample so the factory can be exercised without a live store. */
 const DEMO_EVENT = {
@@ -67,6 +77,8 @@ function parseFlags(argv) {
     ai: false,
     notify: false,
     json: false,
+    upload: false,
+    uploadAll: false,
     event: null,
     voice: null, // null → voice preset comes from --lang
     rate: '+6%',
@@ -80,6 +92,8 @@ function parseFlags(argv) {
     else if (a === '--ai') flags.ai = true;
     else if (a === '--notify') flags.notify = true;
     else if (a === '--json') flags.json = true;
+    else if (a === '--upload') flags.upload = true;
+    else if (a === '--upload-all') flags.uploadAll = true;
     else if (a === '--help' || a === '-h') flags.help = true;
     else if (a === '--event') flags.event = argv[++i] ?? null;
     else if (a === '--voice') flags.voice = argv[++i] ?? null;
@@ -126,6 +140,8 @@ async function main() {
         '  --demo            labelled SAMPLE data',
         '  --ai              fresh AI verdict (free tier) instead of the stored one',
         '  --notify          send finished MP4 to Telegram (bot env vars required)',
+        '  --upload          publish the finished MP4 to YouTube (free Data API v3)',
+        '  --upload-all      publish every finished run not yet on YouTube (no render)',
         '  --json            JSON summary on stdout',
         '  --voice <id>      edge-tts voice (default: preset for --lang)',
         '  --rate <+N%>      speech rate (default +6%)',
@@ -136,9 +152,43 @@ async function main() {
   }
 
   loadDotEnv();
-  const { settings } = loadConfig();
+  const { settings, holidays } = loadConfig();
   const outRoot =
     flags.out ?? path.join(PROJECT_ROOT, 'artifacts', 'shorts');
+  const registryFile = defaultRegistryFile(path.dirname(settings.paths.db));
+
+  // Standalone backfill: publish finished runs that never made it to YouTube.
+  if (flags.uploadAll) {
+    const results = await uploadAllUnsent({ runsRoot: outRoot, registryFile });
+    if (!results.length) {
+      console.log('No finished runs found to upload.');
+      return 0;
+    }
+    const count = (s) => results.filter((r) => r.status === s).length;
+    if (results.some((r) => r.status === 'no-auth')) {
+      console.log(
+        '\n  ⚠ YouTube not authorised yet — run: node scripts/youtube-auth.mjs (one-time)\n' +
+          `  ${results.length} run(s) waiting, 0 published.`
+      );
+      return 0;
+    }
+    for (const r of results) {
+      const line =
+        r.status === 'uploaded'
+          ? `✓ ${r.run} → ${r.url}`
+          : r.status === 'already'
+            ? `= ${r.run} already on YouTube (${r.url})`
+            : r.status === 'sample'
+              ? `- ${r.run} — ${r.message}`
+              : `✗ ${r.run} — ${r.message}`;
+      console.log(`  ${line}`);
+    }
+    console.log(
+      `\n  ${results.length} run(s): ${count('uploaded')} newly published, ` +
+        `${count('already')} already live, ${count('sample')} sample(s), ${count('error')} failed.`
+    );
+    return count('error') ? 1 : 0;
+  }
 
   let event = null;
   let verdict = null;
@@ -149,6 +199,16 @@ async function main() {
     if (flags.demo) {
       recap = demoRecap();
     } else {
+      // Weekend/holiday recaps would just re-publish the previous session
+      // under a new date — skip cleanly instead of uploading a duplicate.
+      const cal = marketCalendar(new Date(), holidays, settings.marketHours ?? {});
+      if (cal.closed) {
+        console.log(
+          `Market closed today (${cal.closedLabel ?? cal.kind}) — no new session to recap, skipping.`
+        );
+        store?.close?.();
+        return 0;
+      }
       store = openStore({ driver: 'sqlite', dbPath: settings.paths.db });
       recap = await liveRecap({ store });
     }
@@ -166,13 +226,20 @@ async function main() {
         50
       );
       if (!recent.length) throw new Error('store has no recent events — try --demo');
+      // Prefer events we have never published (upload registry), newest first.
+      const registry = loadRegistry(registryFile);
+      const pending = recent.filter((e) => !registry.videos[`event:${e.event_id}`]);
+      if (!pending.length && recent.length) {
+        console.log('note: every recent event is already on YouTube — re-rendering the newest anyway');
+      }
+      const pool = pending.length ? pending : recent;
       // Prefer events with high importance, newest first.
-      recent.sort(
+      pool.sort(
         (a, b) =>
           (b.importance ?? 0) - (a.importance ?? 0) ||
           Date.parse(b.detected_at ?? 0) - Date.parse(a.detected_at ?? 0)
       );
-      event = recent[0];
+      event = pool[0];
     }
 
     if (flags.ai) {
@@ -201,6 +268,25 @@ async function main() {
 
   store?.close?.();
 
+  // Publish to YouTube (free Data API v3) — samples never leave the box.
+  let uploadErrored = false;
+  let uploadLine = '';
+  if (flags.upload) {
+    const result = await uploadShort({ summary, registryFile });
+    summary.upload = result;
+    uploadErrored = result.status === 'error';
+    uploadLine =
+      result.status === 'uploaded'
+        ? `  ✓ uploaded → ${result.url}`
+        : result.status === 'already'
+          ? `  = already on YouTube → ${result.url}`
+          : result.status === 'sample'
+            ? `  ⏭ ${result.message}`
+            : result.status === 'no-auth'
+              ? `  ⚠ ${result.message}`
+              : `  ✗ upload failed: ${result.message}`;
+  }
+
   if (flags.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
@@ -213,10 +299,10 @@ async function main() {
         ` · ${summary.durationSec}s · ${(summary.bytes / 1e6).toFixed(1)} MB · ${summary.scenes.length} scenes · ${summary.elapsedSec}s build`
     );
     console.log(`      title: ${summary.title}`);
-    console.log(`      upload with: ${summary.video}`);
+    if (uploadLine) console.log(uploadLine);
     console.log('');
   }
-  return 0;
+  return uploadErrored ? 3 : 0;
 }
 
 main()

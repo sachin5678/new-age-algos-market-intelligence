@@ -19,6 +19,9 @@
     "render:alert": "node scripts/render-preview.mjs alert",
     "short": "node scripts/make-short.mjs",
     "recap": "node scripts/make-short.mjs --type recap",
+    "upload:all": "node scripts/make-short.mjs --upload-all",
+    "auth:youtube": "node scripts/youtube-auth.mjs",
+    "schedule:register": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-short-tasks.ps1",
     "test": "node --test"
   },
   "engines": {

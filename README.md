@@ -371,6 +371,8 @@ npm run short -- --lang hinglish   # Hinglish voiceover (English visuals, Hingli
 npm run short -- --lang hindi      # Hindi voiceover (Devanagari narration, hi-IN voice)
 npm run recap  -- --type recap ... # recap: --lang works the same way
 npm run short -- --notify      # also send the MP4 to the Telegram content queue
+npm run short -- --upload      # publish the finished MP4 to YouTube (free Data API v3)
+npm run short -- --upload-all  # publish every finished run not yet on YouTube (no render)
 npm run short -- --voice en-IN-NeerjaNeural --rate +8%
 ```
 
@@ -413,6 +415,52 @@ top gainers/losers + index pulse + store news → scenes with candle charts → 
 - Failed quotes are skipped, never fabricated; zero movers (Yahoo unreachable)
   fails with a hint to use `--demo`. `npm run recap -- --demo` renders a
   labelled SAMPLE fixture with synthetic candles.
+- Weekends/holidays exit early ("no new session to recap") so a closed market
+  can never re-publish the previous session's movers under a new date.
+
+### Auto-upload to YouTube (`--upload`)
+
+`src/youtube.js` publishes finished shorts through the **free YouTube Data
+API v3** (10 000 quota units/day; one upload = 1 600 → six uploads/day, we
+need two). Uploads use OAuth refresh tokens — nothing paid, nothing third-party.
+
+One-time Google setup (~3 minutes, follow the steps the script prints):
+
+1. Google Cloud Console → enable **YouTube Data API v3**
+2. OAuth consent screen → External → add `youtube.upload` scope + yourself as
+   test user → **PUBLISH APP** (in "Testing" mode Google expires the refresh
+   token after 7 days)
+3. Credentials → OAuth client ID → **Desktop app** → download JSON → save as
+   `~/.secrets/youtube-client.json`
+4. `node scripts/youtube-auth.mjs` → approve in the browser once → the refresh
+   token is stored in `~/.secrets/youtube-auth.json` (gitignored)
+
+Guarantees:
+
+- **Dedup registry** `state/youtube-uploads.json` keys every short
+  (`event:<id>` / `recap:<YYYY-MM-DD>`) — re-renders, retries and backfills
+  never post the same content twice; story selection prefers never-published
+  events
+- **Samples never upload** — demo/labelled test data stays on disk (§27)
+- Thumbnail = hook-scene PNG (soft-fail if >2 MB); `YOUTUBE_PRIVACY=public|unlisted|private`
+
+### Twice-daily schedule (Windows tasks)
+
+Two registered tasks run the whole chain automatically (Mon–Fri, IST clock):
+
+| Task | When | What |
+|---|---|---|
+| `NewAgeShorts-Story` | 09:00 | store refresh (`market-check --dry-run`, fetch + store, no sends) → **story** short, Hinglish → upload → backfill |
+| `NewAgeShorts-Recap` | 16:15 | same refresh → **recap** short of the day's top movers, Hinglish → upload → backfill |
+
+- Wrapper: `scripts/scheduled-short.ps1` (per-run log in `logs/scheduled-*.log`,
+  newest 40 kept; exit 0 = fine/auth-pending/holiday, 1 = render failed,
+  3 = upload failed — the MP4 is still on disk either way)
+- Re-register after moving the repo: `scripts/register-short-tasks.ps1`
+- Language lives in one line of the wrapper (`-Lang hinglish` → change to
+  `en`/`hindi` if you prefer)
+- The machine must be on and you logged in (InteractiveToken) at those times;
+  `StartWhenAvailable` catches missed runs after wake-up
 
 ### Outputs per run
 
