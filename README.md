@@ -63,11 +63,38 @@ News is fetched directly (RSS HTTP) — the same 5 verified feeds the `rss` MCP 
 Production runs on GitHub Actions — no laptop, no OpenCode, no MCPs. Each run is a
 one-shot job: collect → detect → format → send → persist state.
 
-| Workflow | Trigger | Times (UTC / IST) |
+| Workflow | Trigger | Times |
 |---|---|---|
-| `market-intelligence.yml` | `schedule` + `workflow_dispatch` | `0 3 * * 1-5` → 08:30 IST pre-market · `*/5 3-10 * * 1-5` → every 5 min, 09:15–15:30 IST · `15 10 * * 1-5` → 15:45 IST closing |
-| `market-intelligence-external.yml` | `repository_dispatch` (`market-check`, `premarket`, `closing`, `market-news`, `health-check`) | on demand — for precise-timing external cron |
+| `market-intelligence.yml` | `workflow_dispatch` only — called by **cron-job.org** | see the cron-job.org jobs below |
+| `market-intelligence-external.yml` | `repository_dispatch` (`market-check`, `premarket`, `closing`, `market-news`, `health-check`) | on demand — optional alternative path; also `target`-guarded |
 | `ci.yml` | push / PR | tests + Docker image to `ghcr.io` |
+
+**Scheduling: cron-job.org, not GitHub's scheduler**
+
+GitHub's `schedule:` trigger was removed on purpose — it never fired for this
+account (0 runs in 26h, including a `*/5 * * * *` probe), and when it did fire
+for this account it ran **hours late**, which for a market briefing means stale
+content posted as if fresh. The three schedules now live in the cron-job.org
+console, which POSTs `workflow_dispatch`:
+
+| Job | cron-job.org schedule | `job_type` |
+|---|---|---|
+| Pre-market briefing | `0 3 * * 1-5` (08:30 IST) | `premarket` |
+| Market check | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` |
+| Closing briefing | `15 10 * * 1-5` (15:45 IST) | `closing` |
+
+Each job POSTs to
+`/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches`
+with a JSON body of `{"ref":"main","inputs":{"job_type":"…","target":"live"}}`.
+cron-job.org reports a job as healthy only on HTTP 2xx, and GitHub returns
+`204` for an accepted dispatch, so a rejected request (401 expired token, 403
+bad User-Agent) surfaces as a job failure with e-mail notification.
+
+**The production guard:** `target` defaults to `test`, and only the exact value
+`live` resolves `TELEGRAM_CHAT_ID` to the production secret. A cron job whose
+body omits `target` — or is mis-typed — posts to the **test group**
+`-1004497477393`, never to the main channel. To send to production, the job
+body must literally contain `"target":"live"`.
 
 **Repository secrets**
 
@@ -80,30 +107,35 @@ one-shot job: collect → detect → format → send → persist state.
 The bot must be an **administrator of the channel** with *Post messages* right.
 
 Transport selection is automatic: `TELEGRAM_BOT_TOKEN` present → Bot API,
-otherwise the local GramJS session. `DRY_RUN` is `false` for scheduled runs;
-manual `workflow_dispatch` runs honour the `dry_run` input (default: deliver).
+otherwise the local GramJS session. `DRY_RUN` is `false` unless the `dry_run`
+input is set, so a cron run with no inputs delivers for real.
 
 State (`state/market.db`, `state/inbox`, `state/logs`) survives between runs
 through `actions/cache`, so dedupe, cooldowns and the event graph persist.
 `workflow_dispatch` input `no_ai: true` skips the OpenAI call.
 
-Manual run:
+Manual run (posts to the **test group** unless `target=live`):
 
 ```bash
 gh workflow run market-intelligence.yml -f job_type=closing -f dry_run=false
 ```
 
-External cron (cron-job.org, etc.) POST:
+External cron POST (the form cron-job.org uses — note `target`, not `event_type`):
 
 ```json
-{ "event_type": "market-check", "client_payload": { "dry_run": false } }
+{ "ref": "main", "inputs": { "job_type": "market-check", "target": "live" } }
 ```
 
 ```bash
 curl -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
-  https://api.github.com/repos/OWNER/REPO/dispatches \
-  -d '{"event_type":"market-check","client_payload":{"dry_run":false}}'
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  -H "Content-Type: application/json" \
+  https://api.github.com/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches \
+  -d '{"ref":"main","inputs":{"job_type":"market-check","target":"live"}}'
 ```
+
+Omit `target` (or set `"test"`) to keep the run in the test group.
 
 ## Config knobs
 

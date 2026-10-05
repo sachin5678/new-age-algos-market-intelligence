@@ -13,14 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # External cron is a production trigger: deliver unless the payload
-      # explicitly asks for a dry run ("dry_run": true in client_payload).
+      # External triggers deliver unless the payload asks for a dry run
+      # ("dry_run": true in client_payload).
       DRY_RUN: ${{ github.event.client_payload.dry_run == 'true' && 'true' || 'false' }}
       NO_AI_FLAG: ${{ github.event.client_payload.no_ai == 'true' && '--no-ai' || '' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Guard rail (same one market-intelligence.yml uses): an external trigger
+      # posts to the TEST group unless the payload explicitly says
+      # "client_payload": { "target": "live" }. Without this, a stray or
+      # misconfigured repository_dispatch would land in the production channel.
+      TELEGRAM_CHAT_ID: ${{ github.event.client_payload.target == 'live' && secrets.TELEGRAM_CHAT_ID || '-1004497477393' }}
       NODE_ENV: production
 
     steps:

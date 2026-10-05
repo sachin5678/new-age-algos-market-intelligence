@@ -1,13 +1,11 @@
 name: Market Intelligence
 
 on:
-  schedule:
-    # Pre-market briefing: 08:30 IST = 03:00 UTC
-    - cron: '0 3 * * 1-5'
-    # Market monitoring: every 5 minutes from 09:15-15:30 IST = 03:45-10:00 UTC, Mon-Fri
-    - cron: '*/5 3-10 * * 1-5'
-    # Closing briefing: 15:45 IST = 10:15 UTC
-    - cron: '15 10 * * 1-5'
+  # NOTE: no `schedule:` here on purpose. GitHub's scheduler never fired for this
+  # account (0 runs in 26h, including a per-5-minute probe; and when it does fire
+  # for this account it runs hours late). cron-job.org is the sole scheduler — it
+  # calls workflow_dispatch below with an explicit job_type + target. The per-job
+  # schedules live in the cron-job.org console, not here.
   workflow_dispatch:
     inputs:
       job_type:
@@ -32,7 +30,7 @@ on:
         required: false
         default: false
       target:
-        description: 'Where a manual run posts. The schedule always posts to production.'
+        description: 'Where the run posts. default/test = test group; live = production channel (set by the cron-job.org job body).'
         type: choice
         required: false
         default: test
@@ -53,15 +51,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Scheduled runs always deliver; manual dispatch honours the dry_run input.
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
+      # Every trigger is a workflow_dispatch now (cron-job.org), so DRY_RUN is
+      # purely an input: omitted -> false -> real delivery.
+      DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && 'true' || 'false' }}
       NO_AI_FLAG: ${{ github.event.inputs.no_ai == 'true' && '--no-ai' || '' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      # Guard rail: a manual dispatch posts to the TEST group unless target=live.
-      # Only the schedule (no inputs at all) reaches the production channel.
-      TELEGRAM_CHAT_ID: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || github.event_name == 'workflow_dispatch' && '-1004497477393' || secrets.TELEGRAM_CHAT_ID }}
+      # Guard rail: target=live is the ONLY thing that reaches production, and it
+      # must be written explicitly in the cron-job.org job body. Omitted/test -> test group.
+      TELEGRAM_CHAT_ID: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || '-1004497477393' }}
       NODE_ENV: production
 
     steps:
@@ -99,14 +98,14 @@ jobs:
         run: node src/index.js --job-type health-check
 
       - name: Run pre-market briefing
-        if: ${{ github.event.schedule == '0 3 * * 1-5' || github.event.inputs.job_type == 'premarket' }}
+        if: ${{ github.event.inputs.job_type == 'premarket' }}
         env:
           VISUAL_BRIEFING: 'true'
           VISUAL_PDF: 'false'
         run: node src/index.js --mode premarket --briefing premarket --visual ${{ env.NO_AI_FLAG }}
 
       - name: Run market check
-        if: ${{ github.event.schedule == '*/5 3-10 * * 1-5' || github.event.inputs.job_type == 'market-check' }}
+        if: ${{ github.event.inputs.job_type == 'market-check' }}
         env:
           VISUAL_ALERTS: 'true'
         run: node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
@@ -116,7 +115,7 @@ jobs:
         run: node src/index.js --job-type market-news ${{ env.NO_AI_FLAG }}
 
       - name: Run closing briefing
-        if: ${{ github.event.schedule == '15 10 * * 1-5' || github.event.inputs.job_type == 'closing' }}
+        if: ${{ github.event.inputs.job_type == 'closing' }}
         env:
           VISUAL_BRIEFING: 'true'
           VISUAL_PDF: 'false'
