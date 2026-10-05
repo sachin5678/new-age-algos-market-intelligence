@@ -2,6 +2,17 @@ import { canonicalUrl } from '../dedupe/canonicalUrl.js';
 import { isDuplicatePair } from '../dedupe/similarity.js';
 import { contentHash, eventIdFor, newClusterId } from './hash.js';
 
+/**
+ * How long a 'deferred' story stays eligible for a retry.
+ *
+ * A timing rejection (outside_market_hours, min_interval, cooldown, caps) is
+ * a "not now", and this bounds how long "now" may be: long enough to span the
+ * 45 minutes a pre-open story waits for the 09:15 gate, or an hour of
+ * cooldown. Beyond it the alert would be stale, so the story is retired — the
+ * premarket/closing briefings still carry it from their own 48h/24h lookback.
+ */
+const DEFERRED_RETRY_MAX_AGE_MS = 6 * 3600_000;
+
 function toPair(cluster) {
   return {
     title: cluster.canonical_title,
@@ -31,7 +42,8 @@ function mergeCluster(cluster, event, nowIso) {
 
 /**
  * EVENT DETECTION stage — compares each new article against stored events/clusters.
- * Statuses: NEW | UPDATED | DUPLICATE | KNOWN
+ * Statuses: NEW | UPDATED | DUPLICATE | KNOWN, plus RETRY for a stored event
+ * that was only deferred on a timing condition and is being re-considered.
  * Only NEW and materially UPDATED proceed to publication analysis.
  */
 export function detectEvents(articles, ctx) {
@@ -41,7 +53,7 @@ export function detectEvents(articles, ctx) {
   const storedClusters = store.findRecentClusters(since);
   const workingClusters = [];
   const results = [];
-  const stats = { NEW: 0, UPDATED: 0, DUPLICATE: 0, KNOWN: 0 };
+  const stats = { NEW: 0, UPDATED: 0, DUPLICATE: 0, KNOWN: 0, RETRY: 0 };
 
   for (const article of articles) {
     const enriched = {
@@ -64,10 +76,42 @@ export function detectEvents(articles, ctx) {
       first_seen_at: article.detected_at ?? nowIso,
     };
 
-    // 1) Already known (same URL or same story hash) → nothing new
+    // 1) Already known (same URL or same story hash). Terminal unless the
+    //    stored event is merely deferred on a timing condition.
     const known =
       store.getEventByContentHash(hash) || store.getEventByCanonicalUrl(canon);
     if (known) {
+      if (known.status === 'deferred') {
+        const firstSeen = Date.parse(known.first_seen_at ?? known.detected_at ?? nowIso);
+        const ageMs = now.getTime() - firstSeen;
+        if (Number.isFinite(firstSeen) && ageMs <= DEFERRED_RETRY_MAX_AGE_MS) {
+          // Re-queue under its ORIGINAL detection status: shouldPublish() reads
+          // event.detection_status to decide new-vs-not_new, so surfacing this
+          // as 'KNOWN' would trip that gate and silently cancel the retry.
+          const detection = known.detection_status === 'UPDATED' ? 'UPDATED' : 'NEW';
+          event.detection_status = detection;
+          event.event_id = known.event_id;
+          event.cluster_id = known.cluster_id;
+          event.event_status = known.event_status ?? 'new';
+          // Carry the defer and the true first_seen across this run: pipeline
+          // re-saves the event before the publish decision, and losing either
+          // would either make the story terminal or restart its age clock.
+          event.status = 'deferred';
+          event.first_seen_at = known.first_seen_at ?? event.first_seen_at;
+          stats.RETRY += 1;
+          results.push({
+            event,
+            status: detection,
+            clusterId: known.cluster_id ?? null,
+            score: 1,
+            reason: 'timing_retry',
+          });
+          continue;
+        }
+        // Aged out of the retry window: retire it so it stops being examined
+        // on every subsequent run.
+        store.updateEvent?.(known.event_id, { status: 'ignored' });
+      }
       event.detection_status = 'KNOWN';
       event.event_id = known.event_id;
       event.cluster_id = known.cluster_id;
@@ -160,6 +204,6 @@ export function detectEvents(articles, ctx) {
     results.push({ event, status: 'NEW', clusterId: cluster.cluster_id, score: 1, reason: 'no_match' });
   }
 
-  logger?.info('EVENT_DETECT', `NEW=${stats.NEW} UPDATED=${stats.UPDATED} DUPLICATE=${stats.DUPLICATE} KNOWN=${stats.KNOWN}`, stats);
+  logger?.info('EVENT_DETECT', `NEW=${stats.NEW} UPDATED=${stats.UPDATED} DUPLICATE=${stats.DUPLICATE} KNOWN=${stats.KNOWN} RETRY=${stats.RETRY}`, stats);
   return { results, stats, clusters: workingClusters };
 }

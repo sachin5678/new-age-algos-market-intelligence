@@ -6,7 +6,18 @@ import { deliverEvents } from './telegram/deliver.js';
 import { fallbackVerdict } from './ai/openaiService.js';
 
 /** Reasons that are timing-related (event stays 'processed'), vs permanent rejections ('ignored'). */
-const TIMING_REASONS = new Set(['min_interval', 'cooldown', 'daily_cap', 'outside_market_hours']);
+// Rejections whose cause expires on its own — the gate reopens, the interval
+// elapses, the rolling window frees a slot. They are deferrals, not verdicts,
+// so they are recorded as 'deferred' and re-considered by detectEvents on a
+// later run. Reasons outside this set are terminal: the event is 'ignored'.
+// hourly_cap belongs here too: it resets every hour like daily_cap does.
+const TIMING_REASONS = new Set([
+  'min_interval',
+  'cooldown',
+  'daily_cap',
+  'hourly_cap',
+  'outside_market_hours',
+]);
 
 /**
  * Phase 1 core pipeline — every stage is a separate module, wired here only:
@@ -157,7 +168,10 @@ export async function runPipeline({
     });
     if (!d.publish) {
       summary.rejectReasons[d.reason] = (summary.rejectReasons[d.reason] ?? 0) + 1;
-      const status = TIMING_REASONS.has(d.reason) ? 'processed' : 'ignored';
+      // 'deferred' means "revisit me": detectEvents re-queues exactly this
+      // status. 'processed' stays reserved for terminal handling (cluster
+      // de-duplication), and 'published'/'ignored' are never retried.
+      const status = TIMING_REASONS.has(d.reason) ? 'deferred' : 'ignored';
       store.updateEvent?.(c.event.event_id, { status });
     }
   }

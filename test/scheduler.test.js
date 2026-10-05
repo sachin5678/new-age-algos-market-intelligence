@@ -290,3 +290,167 @@ test('Critical HIGH event bypasses hourly cap when criticalAutoPublish=true', as
   assert.equal(summary2.counts.approved, 1, 'critical event bypasses hourly cap');
   assert.equal(h.transport.sent.length, 2);
 });
+
+// -----------------------------------------------------------------------------
+// Deferrals are retried, terminal rejections are not
+//
+// shouldPublish() records timing rejections (outside_market_hours, min_interval,
+// cooldown, caps) as 'deferred'. detectEvents re-queues those on a later run;
+// 'published' and 'ignored' are never touched again. Without this, a story
+// first seen while the gate was shut was persisted, rejected, then returned as
+// KNOWN and skipped permanently - silently dropping pre-open and post-close
+// news, and any alert that merely lost a race with min_interval.
+// -----------------------------------------------------------------------------
+
+const DEFER_URL = 'https://nseindia.com/circular/preopen-defer';
+
+test('9) A story deferred before the open is retried and published at 09:30 IST', async () => {
+  const h = makeHarness({ holidays: HOLIDAYS });
+  const story = {
+    ...BASE,
+    url: DEFER_URL,
+    title: 'SEBI issues circular on new F&O margin norms',
+    description: 'The regulator has notified revised margin requirements for the session.',
+  };
+
+  // 08:00 IST — the 09:15 gate is shut, so the alert is held, not dropped.
+  const run1 = await runOnce(h, [story], { runId: 'defer-1', now: new Date('2026-10-05T02:30:00Z') });
+  assert.equal(run1.rejectReasons.outside_market_hours, 1);
+  assert.equal(h.transport.sent.length, 0, 'nothing goes out while the gate is shut');
+  assert.equal(h.store.getEventByCanonicalUrl(DEFER_URL).status, 'deferred');
+
+  // 09:30 IST — the same story must be reconsidered, not skipped as KNOWN.
+  const run2 = await runOnce(h, [story], { runId: 'defer-2', now: new Date('2026-10-05T04:00:00Z') });
+  assert.equal(run2.counts.detection.RETRY, 1, 'requeued rather than discarded');
+  assert.equal(run2.counts.detection.KNOWN, 0, 'not treated as merely-seen-before');
+  assert.equal(run2.counts.approved, 1, 'publishes once the gate is open');
+  assert.equal(h.transport.sent.length, 1, 'exactly one alert, delivered on the retry');
+});
+
+const MERIT_URL = 'https://moneycontrol.com/news/analysts-nifty-26000';
+
+test('10) A story rejected on merit is never retried', async () => {
+  const h = makeHarness();
+  const story = {
+    ...BASE,
+    url: MERIT_URL,
+    source: 'Moneycontrol',
+    source_type: 'media',
+    trust_tier: 3,
+    title: 'Analysts say Nifty may hit 26,000 by year end',
+    description: 'Brokerage firms remain bullish on the index.',
+    category: 'MARKET',
+  };
+
+  const run1 = await runOnce(h, [story], { runId: 'merit-1', now: MARKET_NOW });
+  assert.equal(run1.rejectReasons.importance_level, 1);
+  assert.equal(h.store.getEventByCanonicalUrl(MERIT_URL).status, 'ignored');
+
+  const run2 = await runOnce(h, [story], { runId: 'merit-2', now: MARKET_NOW });
+  assert.equal(run2.counts.detection.RETRY, 0, 'a verdict on the story itself is terminal');
+  assert.equal(run2.counts.detection.KNOWN, 1);
+  assert.equal(h.transport.sent.length, 0);
+});
+
+const PUBLISHED_URL = 'https://nseindia.com/circular/published-once';
+
+test('11) A published story is never requeued — no double alert', async () => {
+  const h = makeHarness();
+  const story = {
+    ...BASE,
+    url: PUBLISHED_URL,
+    title: 'SEBI announces F&O position limits revised for retail traders',
+    description: 'The regulator has cut index position limits from 500 to 300 contracts.',
+  };
+
+  await runOnce(h, [story], { runId: 'pub-1', now: MARKET_NOW });
+  assert.equal(h.transport.sent.length, 1);
+  assert.equal(h.store.getEventByCanonicalUrl(PUBLISHED_URL).status, 'published');
+
+  const run2 = await runOnce(h, [story], { runId: 'pub-2', now: MARKET_NOW });
+  assert.equal(run2.counts.detection.RETRY, 0, 'published is not a deferral');
+  assert.equal(run2.counts.detection.KNOWN, 1);
+  assert.equal(h.transport.sent.length, 1, 'still exactly one alert');
+});
+
+test('12) hourly_cap defers the story, and it is retried once the window rolls', async () => {
+  const h = makeHarness({
+    hourlyCap: 3,
+    settings: { publish: { minIntervalMinutes: 0, cooldownMinutes: 0 }, scheduler: { criticalAutoPublish: false } },
+  });
+  const baseNow = new Date('2026-10-09T04:00:00Z'); // Friday 09:30 IST
+
+  const firstThree = [
+    {
+      url: 'https://nseindia.com/circular/cap-a',
+      title: 'SEBI announces F&O position limits revised',
+      description: 'The regulator has notified new position limits for index derivatives.',
+      category: 'SEBI',
+    },
+    {
+      url: 'https://rbi.org.in/scripts/rbi-circular-cap-b',
+      title: 'RBI cuts repo rate by 25 bps to 6.25%',
+      description: 'The monetary policy committee reduced the policy repo rate.',
+      category: 'RBI',
+    },
+    {
+      url: 'https://pib.gov.in/newsite/printrelease-cap-c',
+      title: 'Govt cuts capital gains tax on equities',
+      description: 'Finance ministry slashes LTCG tax rate for equity investors.',
+      category: 'MACRO',
+    },
+  ];
+  for (let i = 0; i < firstThree.length; i += 1) {
+    await runOnce(h, [{ ...BASE, ...firstThree[i] }], {
+      runId: `cap-${i}`,
+      now: new Date(baseNow.getTime() + i * 60000),
+    });
+  }
+  assert.equal(h.transport.sent.length, 3, 'hourly cap filled');
+
+  const fourth = {
+    ...BASE,
+    url: 'https://nseindia.com/circular/cap-d',
+    title: 'SEBI halts derivatives trading amid extreme volatility',
+    description: 'The regulator has suspended F&O trading for the session due to extreme volatility.',
+    category: 'SEBI',
+  };
+  const blocked = await runOnce(h, [fourth], { runId: 'cap-d1', now: new Date(baseNow.getTime() + 4 * 60000) });
+  assert.equal(blocked.rejectReasons.hourly_cap, 1, '4th event hits the cap');
+  assert.equal(
+    h.store.getEventByCanonicalUrl(fourth.url).status,
+    'deferred',
+    'a rate limit is a delay, so hourly_cap defers instead of discarding'
+  );
+  assert.equal(h.transport.sent.length, 3);
+
+  const later = await runOnce(h, [fourth], { runId: 'cap-d2', now: new Date(baseNow.getTime() + 61 * 60000) });
+  assert.equal(later.counts.detection.RETRY, 1, 'requeued once the window rolled');
+  assert.equal(h.transport.sent.length, 4, 'delivered on retry');
+});
+
+const AGED_URL = 'https://nseindia.com/circular/aged-defer';
+
+test('13) A deferral older than the retry window is retired, never alerted late', async () => {
+  const h = makeHarness({ holidays: HOLIDAYS });
+  const story = {
+    ...BASE,
+    url: AGED_URL,
+    title: 'SEBI issues circular on new F&O margin norms',
+    description: 'The regulator has notified revised margin requirements for the session.',
+  };
+
+  await runOnce(h, [story], { runId: 'age-1', now: new Date('2026-10-05T02:30:00Z') }); // 08:00 IST
+  assert.equal(h.store.getEventByCanonicalUrl(AGED_URL).status, 'deferred');
+
+  // Eight hours on — past the 6h retry window, and the market has closed.
+  const later = await runOnce(h, [story], { runId: 'age-2', now: new Date('2026-10-05T10:30:00Z') }); // 16:00 IST
+  assert.equal(later.counts.detection.RETRY, 0, 'stale deferral is not requeued');
+  assert.equal(later.counts.detection.KNOWN, 1);
+  assert.equal(h.transport.sent.length, 0, 'no stale alert reaches the channel');
+  assert.equal(
+    h.store.getEventByCanonicalUrl(AGED_URL).status,
+    'ignored',
+    'retired so it stops consuming a retry on every later run'
+  );
+});

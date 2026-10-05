@@ -170,7 +170,7 @@ function printSummary(summary, settings, mode) {
     '',
     `RUN ${summary.runId}  mode=${mode}  dryRun=${settings.dryRun}`,
     `  collected=${c.collected} articles=${c.articles} snapshots=${c.snapshots} dropped=${c.dropped ?? 0}`,
-    `  detect: NEW=${d.NEW ?? 0} UPDATED=${d.UPDATED ?? 0} DUPLICATE=${d.DUPLICATE ?? 0} KNOWN=${d.KNOWN ?? 0}`,
+    `  detect: NEW=${d.NEW ?? 0} UPDATED=${d.UPDATED ?? 0} DUPLICATE=${d.DUPLICATE ?? 0} KNOWN=${d.KNOWN ?? 0} RETRY=${d.RETRY ?? 0}`,
     `  classify: HIGH=${c.levels?.HIGH ?? 0} MEDIUM=${c.levels?.MEDIUM ?? 0} LOW=${c.levels?.LOW ?? 0}`,
     `  decisions: approved=${c.approved ?? 0} rejected=${c.rejected ?? 0}`,
     `  telegram: published=${c.published ?? 0} sendFailures=${c.sendFailures ?? 0}`,
