@@ -17,6 +17,7 @@
     "render:premarket": "node scripts/render-preview.mjs premarket",
     "render:closing": "node scripts/render-preview.mjs closing",
     "render:alert": "node scripts/render-preview.mjs alert",
+    "short": "node scripts/make-short.mjs",
     "test": "node --test"
   },
   "engines": {

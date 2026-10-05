@@ -34,6 +34,7 @@ src/
   telegram/      alert + briefing formatting, transports (dry-run / JSON emit / gramjs later)
   store/         SQLite (node:sqlite) + in-memory store
   log/           structured stage logging with secret redaction
+  short/         Market → Short factory: script → edge-tts voice → scene PNGs → captions → ffmpeg MP4
   pipeline.js    stage orchestration (each stage is its own module)
   index.js       CLI entry
 test/            node:test unit + integration tests (offline fixtures)
@@ -340,3 +341,53 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 - **No AI visuals** — AI generates structured content only; the visual is pure code
 - **Missing data = N/A** — never hallucinated prices/percentages/sources/URLs/dates
 - **Confirmation labels** from source hierarchy only: Confirmed / Reported / Awaiting official confirmation / Unconfirmed
+
+## Market → Short factory (`src/short/`)
+
+Turns one market event into a publishable 9:16 Short — fully local and fully free:
+
+```
+event + verdict → script → voice → scene PNGs → burned captions → short.mp4 → Telegram → YouTube
+```
+
+| Stage | Module | Free tool |
+|---|---|---|
+| Script (hook → facts → why → CTA) | `src/short/script.js` | deterministic — reuses the pipeline's stored AI verdict (no model call) |
+| Voice + word timings | `src/short/voice.js` | `edge-tts` (Microsoft neural voices, en-IN-Prabhat/Neerja) |
+| Scene PNGs 1080×1920 | `src/short/scenes.js` | headless Chrome via the existing visual engine |
+| Burned captions | `src/short/captions.js` | ffmpeg + libass (styled ASS from word timings) |
+| Video assembly | `src/short/assemble.js` | ffmpeg (segment → concat → burn → mux) |
+| QA gate | `src/short/qa.js` | ffprobe checks before anything leaves the box |
+
+### Local commands
+
+```bash
+npm run short                  # newest store event → artifacts/shorts/run-<ts>/short.mp4 + meta.json
+npm run short -- --demo        # labelled SAMPLE event, no store needed
+npm run short -- --event <id>  # a specific event
+npm run short -- --ai          # fresh (free-tier) AI verdict instead of the stored one
+npm run short -- --notify      # also send the MP4 to the Telegram content queue
+npm run short -- --voice en-IN-NeerjaNeural --rate +8%
+```
+
+Requirements (all free, one-time local setup):
+
+- `edge-tts` — `pip install edge-tts` (free neural TTS, emits SRT timings)
+- `ffmpeg`/`ffprobe` — discovered via `PATH` or `%LOCALAPPDATA%\ffmpeg` (or set `FFMPEG_PATH`)
+- Chrome/Edge — already used by the briefing renderer
+
+### Outputs per run
+
+`artifacts/shorts/run-<ts>/` (gitignored):
+
+- `short.mp4` — 1080×1920 h264/aac, ~35–50s, captions burned in
+- `meta.json` — YouTube-ready `title` (≤100 chars + #Shorts), `description`, hashtags, per-scene timings
+- `scene-*.png`, `voice.mp3`/`.srt`, `captions.ass` — intermediates kept for debugging
+
+### Design guarantees
+
+- **QA gate before delivery** — duration 18–75s, exact 1080×1920, h264+aac, size floor
+- **Scene ↔ speech sync** — TTS word timings map each scene to its spoken window (proportional fallback if text diverges)
+- **Same visual system as briefings** — central theme, no hard-coded colors (§27), deterministic rendering
+- **No AI visuals, no paid API anywhere** — script text comes from the stored verdict; voice/scenes/video are local free tools
+- **Caption zone reserved** — scene layout keeps the bottom band clear of the Shorts UI
