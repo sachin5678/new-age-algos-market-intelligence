@@ -103,8 +103,17 @@ test('AI service falls back on unparseable completions', async () => {
 });
 
 test('AI service reports a missing key without throwing', async () => {
+  // Strip any ambient key before asserting. testConfig() runs loadConfig(),
+  // which copies process.env.OPENAI_API_KEY into settings.ai.apiKey, and
+  // ci.yml exports that secret for the test job. Inheriting it turned this
+  // assertion into a function of runner state: it passed only for as long as
+  // the repository secret was absent, and broke the moment one was added.
+  const { apiKey: _ambient, ...aiNoKey } = cfg.settings.ai;
   const ai = createOpenAIService({
-    settings: { ...cfg.settings, ai: { ...cfg.settings.ai, apiKeyFile: path.join(os.tmpdir(), 'no-such-key-file') } },
+    settings: {
+      ...cfg.settings,
+      ai: { ...aiNoKey, apiKeyFile: path.join(os.tmpdir(), 'no-such-key-file') },
+    },
     fetchImpl: async () => {
       throw new Error('should never be called');
     },
