@@ -11,6 +11,9 @@ param(
 #   render   -> make-short.mjs (edge-tts + Chrome + ffmpeg)
 #   publish  -> YouTube Data API v3 (--upload) + backfill of any older runs
 $ErrorActionPreference = 'Continue'
+# node writes UTF-8; decode it as UTF-8 (not the OEM codepage) so arrows and
+# dashes in the per-run logs stay readable.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
 New-Item -ItemType Directory -Force -Path (Join-Path $repo 'logs') | Out-Null
