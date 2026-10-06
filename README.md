@@ -459,12 +459,14 @@ The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
 | `New Age Algos \| Recap Short (16:15 IST)` | 16:15 IST | `short-factory.yml` `type=recap lang=hinglish upload=true` |
 
 Each CI run: `apt ffmpeg` + `pip --user edge-tts` (both free) → restore the
-shared `market-state-` cache (fresh events **and** the upload registry) →
+shared `market-state-` cache (upload registry + prior state) → refresh its own
+events via `market-check --dry-run` (fetch + store, no sends) →
 `make-short --type … --upload` → save state back → publish the
 `short-<type>-<run_id>` artifact (MP4 + meta + SRT, kept 7 days).
 
-- Stories read events the pipeline collected the same morning (08:30 pre-market
-  run feeds the 09:00 story); recaps read the 15:45 closing run's state
+- Events are self-fetched every run, so a cold or missing cache never blocks
+  the story (no cross-workflow dependency on the 08:30 pre-market run's save)
+- Job ids for API edits: story = `8588155`, recap = `8588157`
 - No YouTube secrets yet → logs "not authorised" and still renders — the
   consent step never blocks rendering
 - Change time/language: edit the two jobs in the cron-job.org console (API:
