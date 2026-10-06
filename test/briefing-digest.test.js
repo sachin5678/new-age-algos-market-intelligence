@@ -8,12 +8,18 @@ import {
 } from '../src/telegram/briefing-digest.js';
 
 /**
- * The channel used to receive one image PER PAGE: 5–7 messages twice a day,
- * plus 12 event messages in 22 seconds. The reader-facing contract now is:
- * one briefing = ONE text message of 10–12 lines, and alerts are plain text.
+ * Regression: 2026-10-06 — a briefing reached readers as 5–7 separate photo
+ * pages twice a day, and the text fallback ran 40–70 lines with no breathing
+ * room. The contract now is: one briefing = ONE message, ≤12 content lines,
+ * sections separated by exactly one blank line.
  */
 
 const NOW = new Date('2026-10-06T03:00:00Z'); // 08:30 IST
+
+/** Every rendered line, blanks included. */
+const lines = (text) => text.split('\n');
+/** Lines that actually carry content — this is what BRIEF_MAX_LINES budgets. */
+const content = (text) => lines(text).filter((l) => l.trim() !== '');
 
 function richSnapshots() {
   return [
@@ -81,6 +87,19 @@ function assertEscaped(text, label) {
   assert.ok(!withoutEntities.includes('&'), `${label}: unescaped '&' would fail Telegram's HTML parse`);
 }
 
+/** One blank line between sections: present, never doubled, never leading/trailing. */
+function assertSpaced(text, label) {
+  const l = lines(text);
+  assert.ok(l[0].trim() !== '', `${label}: message must not open on a blank line`);
+  assert.ok(l[l.length - 1].trim() !== '', `${label}: message must not close on a blank line`);
+  assert.ok(l.some((x) => x.trim() === ''), `${label}: sections are not separated`);
+  for (let i = 1; i < l.length; i++) {
+    if (l[i].trim() === '' && l[i - 1].trim() === '') {
+      assert.fail(`${label}: two blank lines in a row at line ${i + 1}`);
+    }
+  }
+}
+
 function richPre() {
   const ctx = buildPreMarketContext({
     snapshots: richSnapshots(),
@@ -103,23 +122,39 @@ function richClose() {
   return ctx;
 }
 
-test('pre-market digest is a single message of 10–12 lines', () => {
+test('pre-market digest is a single message of 10–12 content lines', () => {
   const text = formatPreMarketDigest(richPre(), { now: NOW });
-  const lines = text.split('\n');
-  assert.ok(lines.length <= BRIEF_MAX_LINES, `too many lines: ${lines.length}`);
-  assert.ok(lines.length >= 10, `reader asked for 10–12 lines, got ${lines.length}`);
+  assert.ok(content(text).length <= BRIEF_MAX_LINES, `too many content lines: ${content(text).length}`);
+  assert.ok(content(text).length >= 10, `reader asked for 10–12 lines, got ${content(text).length}`);
   assert.ok(text.length < 4096, 'must fit one Telegram message without chunking');
   assertBalanced(text, 'pre-market');
   assertEscaped(text, 'pre-market');
 });
 
-test('closing digest is a single message of 10–12 lines', () => {
+test('closing digest is a single message of 10–12 content lines', () => {
   const text = formatClosingDigest(richClose(), { now: NOW });
-  const lines = text.split('\n');
-  assert.ok(lines.length <= BRIEF_MAX_LINES, `too many lines: ${lines.length}`);
-  assert.ok(lines.length >= 10, `reader asked for 10–12 lines, got ${lines.length}`);
+  assert.ok(content(text).length <= BRIEF_MAX_LINES, `too many content lines: ${content(text).length}`);
+  assert.ok(content(text).length >= 10, `reader asked for 10–12 lines, got ${content(text).length}`);
   assertBalanced(text, 'closing');
   assertEscaped(text, 'closing');
+});
+
+test('sections are separated by exactly one blank line', () => {
+  // Feedback on the first cut: sections ran straight into each other.
+  for (const [label, text] of [
+    ['pre-market', formatPreMarketDigest(richPre(), { now: NOW })],
+    ['closing', formatClosingDigest(richClose(), { now: NOW })],
+    ['empty', formatPreMarketDigest({ now: NOW }, { now: NOW })],
+  ]) {
+    assertSpaced(text, label);
+  }
+
+  // The numbered stories are one section — no blank line inside the list.
+  const pre = formatPreMarketDigest(richPre(), { now: NOW });
+  const l = lines(pre);
+  const labelIdx = l.findIndex((x) => x.includes('WHAT MATTERS TODAY'));
+  assert.ok(l[labelIdx + 1].startsWith('1. '), 'a blank line split the label from its first story');
+  assert.ok(l[labelIdx + 2].startsWith('2. '), 'a blank line split the story list');
 });
 
 test('the interpretation line is never shed to make room', () => {
@@ -136,8 +171,7 @@ test('every section with data survives; nothing is fabricated when empty', () =>
   }
 
   const empty = formatPreMarketDigest({ now: NOW }, { now: NOW });
-  const lines = empty.split('\n');
-  assert.equal(lines.length, 3, 'header + rule + tail, no invented sections');
+  assert.equal(content(empty).length, 3, 'header + rule + brand, no invented sections');
   for (const marker of ['📈', '🌍', '🔥', '👀', '⚠️', '🧠']) {
     assert.ok(!empty.includes(marker), `empty briefing fabricated section ${marker}`);
   }
@@ -162,7 +196,7 @@ test('S&P 500 is escaped — a raw & fails Telegram HTML parsing', () => {
 
 test('an index is never listed as a stock mover', () => {
   const close = formatClosingDigest(richClose(), { now: NOW });
-  const movers = close.split('\n').find((l) => l.includes('MOVERS')) ?? '';
+  const movers = lines(close).find((l) => l.includes('MOVERS')) ?? '';
   assert.ok(!/bank nifty/i.test(movers), `Bank Nifty leaked into MOVERS: ${movers}`);
   assert.ok(movers.includes('TRENT +5.20%'), `real mover missing: ${movers}`);
 });
@@ -171,7 +205,7 @@ test('a full closing context sheds the least useful line, not the view', () => {
   // Every optional section populated puts content over the budget, so cap()
   // runs its shed order. Global cues go first; indices and view never do.
   const close = formatClosingDigest(richClose(), { now: NOW });
-  assert.equal(close.split('\n').length, BRIEF_MAX_LINES, 'cap must still be met');
+  assert.equal(content(close).length, BRIEF_MAX_LINES, 'cap must still be met');
   assert.ok(close.includes('📈'), 'index line must survive');
   assert.ok(close.includes('🧠 <blockquote>'), 'view must survive');
   assert.ok(close.includes('🔮'), 'tomorrow matters more than global cues');
@@ -191,5 +225,5 @@ test('digest never invents a number that is not in the context', () => {
   const text = formatClosingDigest({ now: NOW }, { now: NOW });
   // Only the computed timestamp may carry digits — no prices, no percentages.
   assert.ok(!text.includes('%'), 'a figure appeared with no source snapshot');
-  assert.equal(text.split('\n').length, 3, 'header + rule + tail, nothing else');
+  assert.equal(content(text).length, 3, 'header + rule + brand, nothing else');
 });

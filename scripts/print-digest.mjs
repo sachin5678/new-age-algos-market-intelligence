@@ -73,9 +73,10 @@ const close = buildClosingContext({ snapshots, events, now, watchNext: ['RBI pre
 close.view = 'Breadth improved but stayed narrow; leadership still sits with IT and PSU banks.';
 
 function show(name, text) {
-  const lines = text.split('\n');
-  const ok = lines.length <= BRIEF_MAX_LINES;
-  console.log(`\n=== ${name}  (${lines.length} lines, cap ${BRIEF_MAX_LINES}) ${ok ? 'OK' : 'OVER CAP'} ===`);
+  const all = text.split('\n');
+  const content = all.filter((l) => l.trim() !== '');
+  const ok = content.length <= BRIEF_MAX_LINES;
+  console.log(`\n=== ${name}  (${content.length} content lines, cap ${BRIEF_MAX_LINES}; ${all.length} rendered with section gaps) ${ok ? 'OK' : 'OVER CAP'} ===`);
   console.log('-'.repeat(72));
   console.log(text);
   console.log('-'.repeat(72));
