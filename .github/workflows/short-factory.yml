@@ -19,10 +19,10 @@ on:
         description: 'Spoken narration language'
         type: choice
         required: false
-        default: hinglish
+        default: en
         options:
-          - hinglish
           - en
+          - hinglish
           - hindi
       upload:
         description: 'Publish to YouTube after rendering (free Data API v3)'

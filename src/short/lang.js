@@ -20,7 +20,7 @@ import fs from 'node:fs';
 const MSG_TIMEOUT_MS = 30_000;
 
 export const LANGS = Object.freeze({
-  en: Object.freeze({ id: 'en', label: 'English', voice: 'en-IN-PrabhatNeural' }),
+  en: Object.freeze({ id: 'en', label: 'English', voice: 'en-IN-NeerjaNeural' }),
   hinglish: Object.freeze({ id: 'hinglish', label: 'Hinglish', voice: 'en-IN-PrabhatNeural' }),
   hindi: Object.freeze({ id: 'hindi', label: 'Hindi', voice: 'hi-IN-MadhurNeural' }),
 });

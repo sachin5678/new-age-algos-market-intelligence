@@ -78,7 +78,7 @@ function normalizeDurations(durs) {
  * @param {object} [args.recap]    {gainers, losers, pulse, events, date, sample}
  * @param {string} args.outRoot  artifacts/shorts
  * @param {string} [args.voice]  explicit edge-tts voice id (overrides lang preset)
- * @param {string} [args.rate]   TTS rate like "+6%"
+ * @param {string} [args.rate]   TTS rate like "+14%"
  * @param {boolean} [args.notify] send "content ready" to Telegram (Bot API)
  * @param {object} [args.logger]
  * @returns {Promise<object>} summary
@@ -92,7 +92,7 @@ export async function makeShort({
   recap = null,
   outRoot,
   voice = null,
-  rate = '+6%',
+  rate = '+14%',
   notify = false,
   handle = '@newageAlgos',
   logger = console,

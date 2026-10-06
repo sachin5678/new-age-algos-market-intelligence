@@ -1,7 +1,7 @@
 param(
     [ValidateSet('story', 'recap')]
     [string]$Type = 'story',
-    [string]$Lang = 'hinglish',
+    [string]$Lang = 'en',
     [switch]$NoRefresh
 )
 

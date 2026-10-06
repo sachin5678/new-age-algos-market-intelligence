@@ -81,7 +81,7 @@ function parseFlags(argv) {
     uploadAll: false,
     event: null,
     voice: null, // null → voice preset comes from --lang
-    rate: '+6%',
+    rate: '+14%',
     out: null,
     lang: 'en',
     type: 'story',
@@ -97,7 +97,7 @@ function parseFlags(argv) {
     else if (a === '--help' || a === '-h') flags.help = true;
     else if (a === '--event') flags.event = argv[++i] ?? null;
     else if (a === '--voice') flags.voice = argv[++i] ?? null;
-    else if (a === '--rate') flags.rate = argv[++i] ?? '+6%';
+    else if (a === '--rate') flags.rate = argv[++i] ?? '+14%';
     else if (a === '--out') flags.out = argv[++i] ?? null;
     else if (a === '--lang') flags.lang = argv[++i] ?? 'en';
     else if (a === '--type') flags.type = argv[++i] ?? 'story';
@@ -144,7 +144,7 @@ async function main() {
         '  --upload-all      publish every finished run not yet on YouTube (no render)',
         '  --json            JSON summary on stdout',
         '  --voice <id>      edge-tts voice (default: preset for --lang)',
-        '  --rate <+N%>      speech rate (default +6%)',
+        '  --rate <+N%>      speech rate (default +14%)',
         '  --out <dir>       artifacts root (default artifacts/shorts)',
       ].join('\n')
     );

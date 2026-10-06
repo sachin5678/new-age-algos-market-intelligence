@@ -21,8 +21,8 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
-/** Free en-IN neural voice; Prabhat = male, Neerja = female. */
-export const DEFAULT_VOICE = 'en-IN-PrabhatNeural';
+/** Free en-IN neural voice; Neerja = female (channel default), Prabhat = male. */
+export const DEFAULT_VOICE = 'en-IN-NeerjaNeural';
 
 /**
  * Run edge-tts on a narration file.
@@ -32,7 +32,7 @@ export function synthSpeech({
   text,
   outFile,
   voice = DEFAULT_VOICE,
-  rate = '+6%',
+  rate = '+14%',
   command = 'edge-tts',
   timeoutMs = 120_000,
 } = {}) {

@@ -435,8 +435,10 @@ Requirements (all free, one-time local setup):
   deterministic **lexicon fallback** when no key is configured (`langMode: lexicon`).
   CTA + "why it matters" are per-language templates; recap narration is fully
   template-based (`langMode: template`), so recap shorts never need the AI.
-- Voice presets: `en`/`hinglish` → `en-IN-PrabhatNeural` (reads Romanized
-  Hinglish well), `hindi` → `hi-IN-MadhurNeural` (Devanagari). Override with `--voice`.
+- Voice presets: `en` → `en-IN-NeerjaNeural` at `+14%` (channel default — female
+  Indian English, fast Shorts pace), `hinglish` → `en-IN-PrabhatNeural` (reads
+  Romanized Hinglish well), `hindi` → `hi-IN-MadhurNeural` (Devanagari).
+  Override with `--voice` / `--rate`.
 
 ### Market recap (`--type recap` / `npm run recap`)
 
@@ -499,8 +501,8 @@ The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
 
 | cron-job.org job | Fires (Mon–Fri) | Dispatches |
 |---|---|---|
-| `New Age Algos \| Story Short (09:00 IST)` | 09:00 IST | `short-factory.yml` `type=story lang=hinglish upload=true` |
-| `New Age Algos \| Recap Short (16:15 IST)` | 16:15 IST | `short-factory.yml` `type=recap lang=hinglish upload=true` |
+| `New Age Algos \| Story Short (09:00 IST)` | 09:00 IST | `short-factory.yml` `type=story lang=en upload=true` |
+| `New Age Algos \| Recap Short (16:15 IST)` | 16:15 IST | `short-factory.yml` `type=recap lang=en upload=true` |
 
 Each CI run: `apt ffmpeg` + `pip --user edge-tts` (both free) → restore the
 shared `market-state-` cache (upload registry + prior state) → refresh its own
