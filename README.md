@@ -507,8 +507,12 @@ One-time Meta setup (~10 minutes, all free, no app review for our own account):
 1. Instagram → Settings → Account → **Switch to professional account →
    Creator**; the account must be **public** (private accounts cannot
    publish via API)
-2. Create a **Facebook Page** for the brand (facebook.com/pages/create) and
-   link it to Instagram (IG → Settings → Sharing to other apps → Facebook)
+2. Create a **Facebook Page** for the brand from your personal Facebook
+   account (facebook.com → Menu/Pages → **Create new Page**, ~1 min) and
+   link it to Instagram — either IG → **Edit profile → Page → Connect**
+   or FB Page → **Settings → Permissions → Linked accounts → Instagram**
+   (Accounts Center "Sharing across profiles" alone is NOT the link the
+   API needs — it must be the Page link)
 3. developers.facebook.com → *Get Started* → **Apps → Create App → Business**
    → add the **Instagram Graph API** product
 4. **Graph API Explorer** → select the app → add permissions
