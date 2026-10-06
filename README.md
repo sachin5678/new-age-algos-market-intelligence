@@ -211,8 +211,9 @@ MarkdownV2 parser ignores backslash escapes and mangles hyphens, which made
 `\(Reuters\)` / `\-` render literally.
 
 Every message is built by the shared template system (`src/telegram/theme.js`
-for primitives, `format.js` for alerts/snapshot, `briefings.js` for scheduled
-briefs) and framed with the brand block:
+for primitives, `format.js` for alerts/snapshot, `briefing-digest.js` for the
+scheduled briefs, `briefings.js` for the long form) and framed with the brand
+block:
 
 ```
 🌅 <b>NEW AGE ALGOS</b>
@@ -229,14 +230,26 @@ Templates:
 
 | Template | Function | Shape |
 | --- | --- | --- |
+| **Pre-market digest (scheduled)** | `formatPreMarketDigest` | one message, ≤12 lines: indices → global → WHAT MATTERS TODAY (≤2) → watch → key events → view |
+| **Market wrap digest (scheduled)** | `formatClosingDigest` | one message, ≤12 lines: indices → breadth → KEY DRIVER (≤2) → movers → flows → tomorrow → view |
 | Breaking / high-impact alert | `formatBreakingAlert` | slug → fact → 📌 why it matters → 📊 market impact → 🧠 view (blockquote) → 🔗 source + ✅/🟡/⚠️ status |
 | Regular market update | `formatIntradayAlert` | compact version of the same, with 👀 watch line |
 | Market snapshot | `formatMarketSnapshot` | monospace `<code>` dashboard: indices, breadth, flows, leaders/laggards |
-| Pre-market intelligence | `formatPreMarket` | WHAT MATTERS TODAY (≤5) → watch → global cues → Indian setup → key events → view |
-| Market wrap | `formatClosing` | indices → breadth → key driver → what moved → laggards → movers → flows → global → tomorrow's watch → view |
+| Pre-market intelligence (long form) | `formatPreMarket` | WHAT MATTERS TODAY (≤5) → watch → global cues → Indian setup → key events → view |
+| Market wrap (long form) | `formatClosing` | indices → breadth → key driver → what moved → laggards → movers → flows → global → tomorrow's watch → view |
+
+The two **digest** templates are what GitHub Actions actually sends. The
+long-form pair runs 40–70 lines and is what the multi-page image renderer
+consumes — worth reading as a document, but it only ever reached readers as
+5–7 separate posts. Both read the *same* context, so switching between them
+never touches the data layer.
 
 Rules baked in:
 
+- **One briefing = one message.** Digests are hard-capped at
+  `BRIEF_MAX_LINES` (12). If a context carries more sections than fit, the
+  least essential is shed in an explicit order — the index line, the view and
+  the brand frame are never shed.
 - **Fact / relevance / interpretation are visually separated.** The view is only
   rendered when the AI actually produced a `trader_takeaway`; relevance only when
   `market_relevance` exists — nothing is invented in rules-only mode.
@@ -246,16 +259,18 @@ Rules baked in:
 - **Sources are hyperlinked only when a real http(s) URL exists**, always escaped;
   otherwise the source name is plain text.
 - **Every dynamic value is HTML-escaped** (`<`, `>`, `&`), including headlines
-  like `C++ / 5% / (FY24)`.
-- **Length budget 3600 chars**: density is reduced (fewer items, shorter
-  paragraphs, optional sections dropped) before any split; split parts are
-  labelled `part 1 of 2`.
+  like `C++ / 5% / (FY24)` and snapshot names like `S&P 500` — a bare `&` is
+  rejected outright by Telegram's HTML parser.
+- **Length budget 3600 chars** (long-form): density is reduced (fewer items,
+  shorter paragraphs, optional sections dropped) before any split; split parts
+  are labelled `part 1 of 2`.
 - Missing metrics are omitted — never rendered as `0` or `NaN`.
 
 Preview all five templates with real-looking fixtures (nothing is sent):
 
 ```bash
 npm run samples        # scripts/print-samples.mjs
+node scripts/print-digest.mjs   # the scheduled 10–12 line digests
 ```
 
 ## Visual Briefing System
@@ -360,11 +375,16 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 
 ### Production behaviour (GitHub Actions)
 
-- `VISUAL_BRIEFING=true` on pre-market/closing scheduled steps (`VISUAL_PDF` stays `false` — PNG only)
-- `VISUAL_ALERTS=true` on intraday market-check step
+- Scheduled briefings run the **text digest** — one message of 10–12 lines
+  (`src/telegram/briefing-digest.js`). The image path sent one `sendPhoto` per
+  page, so a briefing reached readers as 5–7 separate posts twice a day.
+- Intraday alerts are **formatted text** too (`VISUAL_ALERTS` off) — one message
+  per story, no image download, no render step that can fail.
+- Images are opt-in: `--visual` on the pre-market/closing command, or
+  `VISUAL_ALERTS=true`. Both remain supported; only the scheduled default moved.
+- `VISUAL_PDF` stays `false` — PNG only when images are enabled.
 - Target chat comes from the `TELEGRAM_CHAT_ID` secret — production points at the main channel **@newagealgos** (`-1003067155583`); the bot must be an admin with *Post messages*
-- Artifacts uploaded as `visual-briefings` (7-day retention)
-- Render failure → logged, falls back to text briefing, never sends broken image
+- When images are enabled, artifacts upload as `visual-briefings` (7-day retention) and a render failure is logged and falls back to the text briefing, never a broken image
 - No browser install needed — ubuntu-latest runners ship Google Chrome
 - No secrets exposed; Bot API transport only
 
