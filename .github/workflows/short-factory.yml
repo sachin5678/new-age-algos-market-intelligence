@@ -43,6 +43,12 @@ jobs:
       YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
       YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
       YOUTUBE_PRIVACY: ${{ secrets.YOUTUBE_PRIVACY }}
+
+      # Instagram Graph API (official, free) — empty until the one-time Meta
+      # token exchange; publishReel() then logs "not configured" and the run
+      # still goes green (YouTube remains the only fatal platform).
+      IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      IG_USER_ID: ${{ secrets.IG_USER_ID }}
       NODE_ENV: production
 
     steps:

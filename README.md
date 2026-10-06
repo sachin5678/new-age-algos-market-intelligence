@@ -490,9 +490,48 @@ Guarantees:
 - **Dedup registry** `state/youtube-uploads.json` keys every short
   (`event:<id>` / `recap:<YYYY-MM-DD>`) — re-renders, retries and backfills
   never post the same content twice; story selection prefers never-published
-  events
+  events. Instagram cross-posts reuse the same file with `insta:`-prefixed
+  keys (`insta:event:<id>`), so the workflow cache version never changes
 - **Samples never upload** — demo/labelled test data stays on disk (§27)
 - Thumbnail = hook-scene PNG (soft-fail if >2 MB); `YOUTUBE_PRIVACY=public|unlisted|private`
+
+### Auto-upload to Instagram Reels (`--upload`, free Graph API)
+
+`src/instagram.js` cross-posts the **same MP4** as a Reel through the official
+**Instagram Content Publishing API** (free; quota 100 API-published posts per
+rolling 24 h, the schedule needs two). No third-party tools, no unofficial
+scrapers — the channel account can never be shadow-banned for automation.
+
+One-time Meta setup (~10 minutes, all free, no app review for our own account):
+
+1. Instagram → Settings → Account → **Switch to professional account →
+   Creator**; the account must be **public** (private accounts cannot
+   publish via API)
+2. Create a **Facebook Page** for the brand (facebook.com/pages/create) and
+   link it to Instagram (IG → Settings → Sharing to other apps → Facebook)
+3. developers.facebook.com → *Get Started* → **Apps → Create App → Business**
+   → add the **Instagram Graph API** product
+4. **Graph API Explorer** → select the app → add permissions
+   `instagram_basic`, `instagram_content_publish`, `pages_read_engagement`
+   → **Generate Access Token** → copy it (plus *App ID* / *App Secret* from
+   app Settings → Basic)
+5. `node scripts/instagram-auth.mjs <token> <app-id> <app-secret>` —
+   exchanges it for a long-lived **page token**, discovers the Page +
+   Instagram ids, writes `~/.secrets/instagram-auth.json` (gitignored)
+6. Add repo secrets `IG_ACCESS_TOKEN` + `IG_USER_ID` — scheduled runs then
+   cross-post every short automatically (local runs read the auth file)
+
+Notes:
+
+- **Hosting**: Meta fetches the video from a public URL, so each run pushes
+  the MP4 to a free temp host first (`tmpfiles.org` 60 min → `uguu.se` 24 h
+  → `catbox.moe` last resort) — it only needs to survive the seconds Meta
+  takes to grab it (`0x0.st` stopped accepting uploads in 2026, so it is
+  out of the chain)
+- **Missing secrets are a no-op**: the run logs `⚠ Instagram not configured`
+  and still exits green
+- Reel spec compliance is automatic: our 1080×1920 H.264 MP4 (~40 s, ~1–3 MB)
+  sits well inside Meta's limits (≤15 min, ≤300 MB, 23–60 fps)
 
 ### Twice-daily schedule (cron-job.org → GitHub Actions)
 
@@ -507,7 +546,8 @@ The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
 Each CI run: `apt ffmpeg` + `pip --user edge-tts` (both free) → restore the
 shared `market-state-` cache (upload registry + prior state) → refresh its own
 events via `market-check --dry-run` (fetch + store, no sends) →
-`make-short --type … --upload` → save state back → publish the
+`make-short --type … --upload` (YouTube + Instagram Reels) → save state back
+→ publish the
 `short-<type>-<run_id>` artifact (MP4 + meta + SRT, kept 7 days).
 
 - Events are self-fetched every run, so a cold or missing cache never blocks

@@ -11,8 +11,8 @@
  *   npm run short -- --ai            → force a fresh (free-tier) AI verdict
  *   npm run short -- --notify        → also send the MP4 to the Telegram
  *                                       content queue (needs bot env vars)
- *   npm run short -- --upload        → publish to YouTube (free Data API v3,
- *                                       one-time auth via youtube-auth.mjs)
+ *   npm run short -- --upload        → publish to YouTube + Instagram Reels
+ *                                       (both official, free — one-time auth each)
  *   npm run short -- --upload-all    → publish every finished run not yet up
  *   npm run short -- --json          → machine-readable summary
  *
@@ -40,6 +40,7 @@ import {
   loadRegistry,
   defaultRegistryFile,
 } from '../src/youtube.js';
+import { publishReel } from '../src/instagram.js';
 
 /** Labelled sample so the factory can be exercised without a live store. */
 const DEMO_EVENT = {
@@ -140,7 +141,7 @@ async function main() {
         '  --demo            labelled SAMPLE data',
         '  --ai              fresh AI verdict (free tier) instead of the stored one',
         '  --notify          send finished MP4 to Telegram (bot env vars required)',
-        '  --upload          publish the finished MP4 to YouTube (free Data API v3)',
+        '  --upload          publish to YouTube + Instagram Reels (official free APIs)',
         '  --upload-all      publish every finished run not yet on YouTube (no render)',
         '  --json            JSON summary on stdout',
         '  --voice <id>      edge-tts voice (default: preset for --lang)',
@@ -287,6 +288,25 @@ async function main() {
               : `  ✗ upload failed: ${result.message}`;
   }
 
+  // Cross-post the same MP4 to Instagram Reels (official Graph API, free).
+  // Same registry file, `insta:`-prefixed keys; YouTube remains the only
+  // platform whose failure fails the run (IG errors are logged, not fatal).
+  let igLine = '';
+  if (flags.upload) {
+    const ig = await publishReel({ summary, registryFile });
+    summary.instagram = ig;
+    igLine =
+      ig.status === 'published'
+        ? `  ✓ reel → ${ig.permalink}`
+        : ig.status === 'already'
+          ? `  = already on Instagram → ${ig.permalink}`
+          : ig.status === 'sample'
+            ? `  ⏭ ${ig.message}`
+            : ig.status === 'no-auth'
+              ? `  ⚠ ${ig.message}`
+              : `  ✗ instagram failed: ${ig.message}`;
+  }
+
   if (flags.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
@@ -300,6 +320,7 @@ async function main() {
     );
     console.log(`      title: ${summary.title}`);
     if (uploadLine) console.log(uploadLine);
+    if (igLine) console.log(igLine);
     console.log('');
   }
   return uploadErrored ? 3 : 0;
