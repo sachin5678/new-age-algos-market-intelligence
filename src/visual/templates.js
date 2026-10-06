@@ -1,623 +1,659 @@
 /**
- * Visual templates (§3): three deterministic layouts over the §19 contract.
+ * Visual templates: three deterministic layouts over the briefing contract.
  *
- *   premarket — 1080×1350 🟦 Pre-Market Intelligence
- *   closing   — 1080×1350 ⬛ Market Close
- *   alert     — 1080×1080 🟥 Breaking Market Alert
+ *   premarket — 🟦 Pre-Market Intelligence   (dynamic height, 1080×900..1600)
+ *   closing   — ⬛ Market Close              (dynamic height, 1080×900..1600)
+ *   alert     — 🟥 Breaking Market Alert     (fixed 1080×1080)
  *
- * Plus renderPdfHtml — the optional A4 PDF (4 pages, selectable text,
- * clickable source links) which may carry MORE detail than the image.
+ * plus renderPdfHtml — the optional A4 PDF (4 pages, selectable text,
+ * clickable source links) which carries MORE detail than the image.
  *
- * All layout lives here; components come from components.js, all styling from
- * theme.js. Sections without data are omitted or show N/A — never fabricated.
+ * THE LAYOUT MODEL
+ * ----------------
+ * A template no longer emits one monolithic HTML blob. It emits a PLAN: an
+ * ordered list of independent, self-contained fragments.
+ *
+ *   buildPagePlan()  ->  { headerVariants, sections[], footerHtml }
+ *   render.js         ->  measures every fragment in one Chromium pass,
+ *                         packs them into pages <= VISUAL_HEIGHT, and picks the
+ *                         smallest page height that contains each page.
+ *
+ * That is the whole answer to "content-first layout": nothing is ever squeezed
+ * to fit a fixed canvas, and no canvas is ever stretched to hold nothing. A
+ * section that has no data does not exist (PART 7/12) — it is never a dash.
+ *
+ * Editorial text is never truncated here or anywhere below it: length is
+ * decided in data.js by cutting on sentence boundaries.
  */
 
 import { esc, theme, baseCss, VISUAL_DEFAULTS } from './theme.js';
 import {
   Header,
   MarketPulse,
+  GlobalCues,
+  Story,
+  Takeaway,
+  Agenda,
   StockWatch,
   SectorWatch,
+  CatalystsRisks,
   ViewCard,
   Footer,
+  MiniTable,
   Poster,
-  delta,
-  num,
-  fmtTime,
-  fmtDateShort,
-  truncate,
-  sourceLine,
 } from './components.js';
 
-const IMPACT_TEXT = {
-  positive: 'POSITIVE',
-  negative: 'NEGATIVE',
-  mixed: 'MIXED',
-  neutral: 'NEUTRAL',
-};
+/** Poster inner padding (logical px) — part of every page-height calculation. */
+export const PAGE_PAD = 18 + 16;
+/** Gap between stacked fragments (logical px). */
+export const FRAG_GAP = 9;
 
 const doc = (css, body) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
   `<meta name="viewport" content="width=device-width,initial-scale=1">` +
   `<style>${css}</style></head><body>${body}</body></html>`;
 
-/** Section heading used by templates for blocks without a dedicated component. */
-export function secTitle(ico, text) {
-  return `<h2 class="sec-h"><span class="ico">${ico}</span>${esc(text)}</h2>`;
-}
+const noteBox = (text) => `<div class="note-box">${esc(text)}</div>`;
 
-/** Mini stat card row — label, value, optional delta (breadth / flows / movers). */
-export function MiniStats({ title, items = [] }) {
-  const rows = items
-    .map(
-      (it) => `
-    <div class="row">
-      <span class="sym" style="font-size:12px">${esc(it.label)}</span>
-      <span class="num">${it.value ?? 'N/A'}${
-        typeof it.pct === 'number' ? ` &nbsp;${delta(it.pct)}` : ''
-      }</span>
-    </div>`
-    )
-    .join('');
-  return `
-<section class="sec" data-sec="${esc(title.toLowerCase().replace(/\s+/g, '-'))}">
-  <div class="lbl-mini">${esc(title)}</div>
-  ${rows || '<div class="sec-note">Data unavailable</div>'}
-</section>`;
-}
+/** Every fragment is a direct `.frag` child of `.poster` — see theme.js. */
+const wrapFrag = (key, html) => `<div class="frag" data-frag="${esc(key)}">${html}</div>`;
 
-const fmtPct = (p) => (typeof p === 'number' ? `${p > 0 ? '+' : ''}${p.toFixed(2)}%` : 'N/A');
+/** Titled heading fragment — `keepWithNext` stops an orphaned heading. */
+const heading = (key, title, ico = '', keepWithNext = true) => ({
+  key,
+  html: wrapFrag(key, `<h2 class="sec-h"><span class="ico">${ico}</span>${esc(title)}</h2>`),
+  keepWithNext,
+});
 
-/** Compact global cues: 3-col grid of mini cards — no group headers, max 3. */
-function CompactGlobalCues({ groups = [] }) {
-  const items = groups.flatMap((g) =>
-    (g.items ?? []).map((it) => ({
-      group: g.group,
-      name: it.name,
-      value: it.value,
-      pct: it.pct_change,
-    }))
-  );
-  if (!items.length) return '';
-  const cards = items
-    .slice(0, 3)
-    .map(
-      (it) => `
-    <div class="cue-mini">
-      <span class="cue-name">${esc(`${it.group} · ${it.name}`)}</span>
-      <span class="cue-val">${it.value != null ? num(it.value) : 'N/A'}</span>
-      ${typeof it.pct === 'number' ? `<span class="cue-delta ${it.pct >= 0 ? 'up' : 'down'}">${delta(it.pct)}</span>` : ''}
-    </div>`
-    )
-    .join('');
-  return `
-<section class="sec" data-sec="global">
-  ${secTitle('🌍', 'GLOBAL CUES')}
-  <div class="cue-grid">${cards}</div>
-</section>`;
-}
+const frag = (key, html, opts = {}) => (html ? [{ key, html: wrapFrag(key, html), ...opts }] : []);
 
-// ------------------------------------------------------------ PRE-MARKET
+// ---------------------------------------------------------------------------
+// PRE-MARKET
+// ---------------------------------------------------------------------------
 
 /**
- * Pre-market poster (§4): header, market pulse, global cues, what matters
- * today (ranked by the existing importance engine), stocks, sectors,
- * catalysts/risks, view, footer.
+ * Pre-market plan (PART 11):
+ *   HEADER → MARKET SNAPSHOT → 🌅 OVERNIGHT / GLOBAL CUES → WHAT HAPPENED
+ *   YESTERDAY → 🌙 OVERNIGHT DEVELOPMENTS → 👀 KEEP AN EYE ON TODAY →
+ *   STOCKS TO WATCH → SECTORS TO WATCH → TODAY'S CATALYSTS → RISKS →
+ *   NEW AGE ALGOS VIEW → SOURCES
+ *
+ * Windows (PART 10): the previous session's stories and last night's stories
+ * are different buckets with different labels; neither is dropped just because
+ * it is older than an intraday freshness cut (PART 25/30).
  */
-export function renderPreMarketHtml(brief = {}, { width, height, scale } = {}) {
-  const dims = {
-    width: width ?? VISUAL_DEFAULTS.width,
-    height: height ?? VISUAL_DEFAULTS.height,
-    scale: scale ?? VISUAL_DEFAULTS.scale,
-  };
-  const now = new Date(brief.generated_at ?? Date.now());
-  const stories = (brief.top_developments ?? []).slice(0, 3);
+function premarketSections(brief, now) {
+  const out = [];
+  const add = (key, html) => out.push(...frag(key, html));
 
-  const storiesBlock = stories.length
-    ? `<section class="sec" data-sec="developments">
-    ${secTitle('🔥', 'WHAT MATTERS TODAY')}
-    ${stories
-      .map((s) => `
-    <article class="story" style="padding:2px 4px 1px">
-      <div class="top" style="gap:1px;font-size:7px">
-        <span class="rank">${String(s.rank).padStart(2, '0')}</span>
-        <span class="cat">${esc(s.category)}</span>
-      </div>
-      <h3 style="font-size:13px;line-height:1.0;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(s.headline)}</h3>
-      ${s.summary ? `<p class="sum" style="font-size:10px;line-height:1.1;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(truncate(s.summary, 70))}</p>` : ''}
-      ${s.why_it_matters ? `<p class="why" style="font-size:8px;color:${theme.colors.muted};line-height:1.05;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(truncate(s.why_it_matters, 50))}</p>` : ''}
-      <div class="src" style="font-size:7px;margin-top:0">${sourceLine(s)}</div>
-    </article>`
-      )
-      .join('')}
-  </section>`
-    : `<section class="sec" data-sec="developments">
-    ${secTitle('🔥', 'WHAT MATTERS TODAY')}
-    <div class="sec-note">No material developments in the freshness window</div>
-  </section>`;
+  // 1 — market snapshot. At 08:30 IST the Indian index values ARE the previous
+  // session's close, so the heading says so rather than implying live prints.
+  add(
+    'pulse',
+    MarketPulse({
+      market: brief.market,
+      heading: 'MARKET SNAPSHOT',
+      ico: '📊',
+      note: brief.previous_session ? 'PREVIOUS SESSION CLOSE' : null,
+    })
+  );
 
-  const watchBlock = () => {
-    const stocks = (brief.stocks_to_watch ?? []).slice(0, 2);
-    const sectors = (brief.sectors_to_watch ?? []).slice(0, 2);
-    if (!stocks.length && !sectors.length) return '';
-    const stockRows = stocks
-      .map((s) => `<div class="row"><span class="sym">${esc(s.symbol)}</span><span class="why">${esc(truncate(s.reason, 40))}</span></div>`)
-      .join('');
-    const sectorChips = sectors
-      .map((s) => `<span class="chip">${esc(s.sector)}<span class="sub"> ${esc(truncate(s.reason, 20))}</span></span>`)
-      .join('');
-    return `
-<section class="sec" data-sec="watch">
-  ${secTitle('📈🏭', 'STOCKS / SECTORS')}
-  <div class="cols">
-    <div>${stockRows || '<div class="sec-note">—</div>'}</div>
-    <div class="chips">${sectorChips || '<div class="sec-note">—</div>'}</div>
-  </div>
-</section>`;
-  };
-
-  const catalystsRisksBlock = () => {
-    const cats = brief.catalysts ?? [];
-    const risks = brief.risks ?? [];
-    if (!cats.length && !risks.length) return '';
-    const col = (title, items, cls) => `
-  <div class="${cls}">
-    <div class="lbl-mini">${esc(title)}</div>
-    ${items.length ? items.slice(0, 3).map((i) => `<div class="bul">${esc(truncate(i, 60))}</div>`).join('') : '<div class="sec-note">—</div>'}
-  </div>`;
-    return `
-<section class="sec" data-sec="catalysts">
-  <div class="two">
-    ${col('CATALYSTS', cats, 'cats')}
-    ${col('RISKS', risks, 'risks')}
-  </div>
-</section>`;
-  };
-
-  const body = `
-${Header({ title: 'PRE-MARKET INTELLIGENCE', calendar: brief.calendar, now })}
-${MarketPulse({ market: brief.market ?? {} })}
-${CompactGlobalCues({ groups: brief.global ?? [] })}
-${storiesBlock}
-${watchBlock()}
-${catalystsRisksBlock()}
-${ViewCard({ view: brief.view })}
-${Footer({ sources: brief.sources ?? [], now, sample: brief.sample })}`;
-
-  return doc(baseCssFor(dims), Poster({ body, ...dims }));
-}
-
-// ---------------------------------------------------------------- CLOSING
-
-/** Closing poster (§18): close, breadth, flows, gainers/losers, sectors, drivers. */
-export function renderClosingHtml(brief = {}, { width, height, scale } = {}) {
-  const dims = {
-    width: width ?? VISUAL_DEFAULTS.width,
-    height: height ?? VISUAL_DEFAULTS.height,
-    scale: scale ?? VISUAL_DEFAULTS.scale,
-  };
-  const now = new Date(brief.generated_at ?? Date.now());
-  const stories = (brief.top_developments ?? []).slice(0, 2);
-
-  const breadth = brief.breadth ?? null;
-  const flows = brief.flows ?? null;
-  const statsBlock = `
-<div class="cols">
-  ${
-    breadth
-      ? MiniStats({
-          title: 'MARKET BREADTH',
-          items: [
-            { label: 'ADVANCES', value: breadth.advances ? num(breadth.advances.value) : 'N/A' },
-            { label: 'DECLINES', value: breadth.declines ? num(breadth.declines.value) : 'N/A' },
-          ],
-        })
-      : ''
+  // 2 — overnight / global cues. Empty → omitted, never a decorative box.
+  if (brief.global?.length) {
+    add(
+      'global',
+      GlobalCues({
+        groups: brief.global,
+        heading: 'OVERNIGHT / GLOBAL CUES',
+        ico: '🌅',
+        note: 'AS OF 08:30 IST',
+      })
+    );
   }
-  ${
-    flows
-      ? MiniStats({
-          title: 'FII / DII',
-          items: [
-            ...(flows.fii ? [{ label: 'FII', value: num(flows.fii.value), pct: flows.fii.pct_change }] : []),
-            ...(flows.dii ? [{ label: 'DII', value: num(flows.dii.value), pct: flows.dii.pct_change }] : []),
-          ],
-        })
-      : ''
-  }
-</div>`;
 
-  const moversBlock = () => {
-    const g = brief.movers?.gainers ?? [];
-    const l = brief.movers?.losers ?? [];
-    if (!g.length && !l.length) return '';
-    const col = (title, rows, cls) => `
-  <div>
-    <div class="lbl-mini">${title}</div>
-    ${
-      rows.length
-        ? rows
-            .map(
-              (r) =>
-                `<div class="row"><span class="sym" style="font-size:12px">${esc(
-                  truncate(r.name, 16)
-                )}</span><span class="num ${cls}">${fmtPct(r.pct_change)}</span></div>`
-            )
-            .join('')
-        : '<div class="sec-note">Data unavailable</div>'
+  const yestStories = (brief.developments ?? []).filter((d) => d.bucket === 'session' || d.bucket === 'earlier');
+  const overnight = (brief.developments ?? []).filter((d) => d.bucket === 'overnight' || d.bucket === 'updated');
+
+  // 3 — what happened yesterday: the SYNTHESIS first (why the session moved),
+  // then the individual stories from it (what happened). They answer different
+  // questions, so they are labelled differently (PART 6).
+  if (brief.previous_session?.synthesis || yestStories.length) {
+    add(
+      'yesterday',
+      `<section class="sec" data-sec="yesterday">
+         <h2 class="sec-h"><span class="ico">📊</span>${
+           brief.previous_session?.label ?? 'YESTERDAY’S SESSION'
+         }</h2>
+         ${
+           brief.previous_session?.synthesis
+             ? `<div class="takeaway"><span class="lbl">WHAT HAPPENED YESTERDAY</span><p>${esc(
+                 brief.previous_session.synthesis
+               )}</p></div>`
+             : ''
+         }
+       </section>`
+    );
+    for (const [i, d] of yestStories.entries()) {
+      add(`ystory-${i}`, Story({ story: d, now }));
     }
-  </div>`;
-    return `
-<section class="sec" data-sec="movers">
-  <div class="two">
-    ${col('TOP GAINERS', g, 'up')}
-    ${col('TOP LOSERS', l, 'down')}
-  </div>
-</section>`;
-  };
+  }
 
-  const sectorBlock = () => {
-    const rows = brief.sector_performance ?? [];
-    if (!rows.length) return '';
-    const chips = rows
-      .map(
-        (r) =>
-          `<span class="chip">${esc(r.name)}<span class="sub"> ${fmtPct(r.pct_change)}</span></span>`
-      )
-      .join('');
-    return `
-<section class="sec" data-sec="sectors">
-  ${secTitle('🏭', 'SECTOR PERFORMANCE')}
-  <div class="chips">${chips}</div>
-</section>`;
-  };
+  // 4 — overnight developments. PART 32: an empty overnight is stated plainly
+  // and the briefing continues with everything else.
+  out.push(heading('h-overnight', 'OVERNIGHT DEVELOPMENTS', '🌙'));
+  if (overnight.length) {
+    for (const [i, d] of overnight.entries()) add(`story-ov-${i}`, Story({ story: d, now }));
+  } else {
+    add('ov-empty', noteBox('No major new overnight developments identified in this window.'));
+  }
 
-  const driverBlock = brief.key_driver
-    ? `
-<section class="sec" data-sec="driver">
-  <div class="view"><span class="lbl">📣 WHAT DROVE THE MARKET</span>${esc(
-    truncate(brief.key_driver.headline, 150)
-  )}${brief.key_driver.summary ? `<br><span style="opacity:.9">${esc(truncate(brief.key_driver.summary, 170))}</span>` : ''}</div>
-</section>`
-    : '';
+  // 5 — agenda. Falls back to snapshot-derived rows so the section is never
+  // blank even on a news-free morning (PART 32).
+  if (brief.keep_an_eye?.length) add('agenda', Agenda({ rows: brief.keep_an_eye }));
 
-  const watchBlock = () => {
-    const stocks = brief.watch_next?.stocks ?? [];
-    const sectors = brief.watch_next?.sectors ?? [];
-    if (!stocks.length && !sectors.length) return '';
-    return `
-<section class="sec" data-sec="watch-next">
-  ${secTitle('👀', "TOMORROW'S WATCH")}
-  <div class="chips">
-    ${stocks.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}
-    ${sectors.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}
-  </div>
-</section>`;
-  };
+  // 6/7 — watch lists
+  add('stocks', StockWatch({ stocks: brief.stocks_to_watch }));
+  add('sectors', SectorWatch({ sectors: brief.sectors_to_watch }));
 
-  const storiesBlock = stories.length
-    ? `<section class="sec" data-sec="developments">
-    ${secTitle('📰', 'KEY DEVELOPMENTS')}
-    ${stories
-      .map((s) => `
-    <article class="story" style="padding:2px 4px 1px">
-      <div class="top" style="gap:1px;font-size:7px">
-        <span class="rank">${String(s.rank).padStart(2, '0')}</span>
-        <span class="cat">${esc(s.category)}</span>
-      </div>
-      <h3 style="font-size:13px;line-height:1.0;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(s.headline)}</h3>
-      ${s.summary ? `<p class="sum" style="font-size:10px;line-height:1.1;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(truncate(s.summary, 70))}</p>` : ''}
-      ${s.why_it_matters ? `<p class="why" style="font-size:8px;color:${theme.colors.muted};line-height:1.05;margin-top:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden">${esc(truncate(s.why_it_matters, 50))}</p>` : ''}
-      <div class="src" style="font-size:7px;margin-top:0">${sourceLine(s)}</div>
-    </article>`
-      )
-      .join('')}
-  </section>`
-    : '';
+  // 8 — catalysts + risks (empty columns omitted entirely)
+  add('catalysts', CatalystsRisks({ catalysts: brief.catalysts, risks: brief.risks }));
 
-  const catalystsRisksBlock = () => {
-    const cats = brief.catalysts ?? [];
-    const risks = brief.risks ?? [];
-    if (!cats.length && !risks.length) return '';
-    const col = (title, items, cls) => `
-  <div class="${cls}">
-    <div class="lbl-mini">${esc(title)}</div>
-    ${items.length ? items.slice(0, 3).map((i) => `<div class="bul">${esc(truncate(i, 60))}</div>`).join('') : '<div class="sec-note">—</div>'}
-  </div>`;
-    return `
-<section class="sec" data-sec="catalysts">
-  <div class="two">
-    ${col('CATALYSTS', cats, 'cats')}
-    ${col('RISKS', risks, 'risks')}
-  </div>
-</section>`;
-  };
+  // 9 — interpretation
+  add('view', ViewCard({ view: brief.view }));
 
-  const body = `
-${Header({ title: 'MARKET CLOSE', calendar: brief.calendar, now })}
-${MarketPulse({ market: brief.market ?? {} })}
-${statsBlock}
-${moversBlock()}
-${sectorBlock()}
-${driverBlock}
-${storiesBlock}
-${watchBlock()}
-${catalystsRisksBlock()}
-${ViewCard({ view: brief.view, label: 'NEW AGE ALGOS VIEW' })}
-${Footer({ sources: brief.sources ?? [], now, sample: brief.sample })}`;
-
-  return doc(baseCssFor(dims), Poster({ body, ...dims }));
+  return out;
 }
 
-// ----------------------------------------------------------------- ALERT
+// ---------------------------------------------------------------------------
+// MARKET CLOSE
+// ---------------------------------------------------------------------------
 
-/** Breaking alert poster (§17): 1080×1080 single-story card. */
-export function renderAlertHtml(brief = {}, { width, height, scale } = {}) {
-  const dims = {
-    width: width ?? VISUAL_DEFAULTS.alertWidth,
-    height: height ?? VISUAL_DEFAULTS.alertHeight,
-    scale: scale ?? VISUAL_DEFAULTS.scale,
+/**
+ * Market-close plan (PART 7), in the published order:
+ *   HEADER → MARKET PULSE → WHAT DROVE THE MARKET → KEY DEVELOPMENTS →
+ *   MARKET BREADTH → FII/DII → TOP GAINERS → TOP LOSERS → SECTOR MOVEMENT →
+ *   TOMORROW'S WATCH → CATALYSTS → RISKS → VIEW → SOURCES
+ *
+ * WHAT DROVE THE MARKET is a synthesis of measured numbers (data.js
+ * sessionSynthesis); KEY DEVELOPMENTS are the individual events. They are
+ * structurally incapable of repeating each other (PART 6).
+ */
+function closingSections(brief, now) {
+  const out = [];
+  const add = (key, html) => out.push(...frag(key, html));
+
+  add(
+    'pulse',
+    MarketPulse({ market: brief.market, heading: 'MARKET PULSE', ico: '📊', note: 'TODAY’S CLOSE' })
+  );
+
+  add('driver', Takeaway({ label: 'WHAT DROVE THE MARKET', text: brief.driver, ico: '🧭' }));
+
+  out.push(heading('h-dev', 'KEY DEVELOPMENTS', '📰'));
+  const developments = brief.developments ?? [];
+  if (developments.length) {
+    for (const [i, d] of developments.entries()) add(`story-${i}`, Story({ story: d, now }));
+  } else {
+    add('dev-empty', noteBox('No individual developments were recorded for this session.'));
+  }
+
+  // 5 — breadth
+  const breadthRows = [];
+  if (brief.breadth?.advances?.value != null) {
+    breadthRows.push({ label: 'ADVANCES', value: brief.breadth.advances.value, pos: brief.breadth.advances.value > (brief.breadth.declines?.value ?? 0) });
+  }
+  if (brief.breadth?.declines?.value != null) {
+    breadthRows.push({ label: 'DECLINES', value: brief.breadth.declines.value, cls: brief.breadth.declines.value > (brief.breadth.advances?.value ?? 0) ? 'down' : '' });
+  }
+  if (breadthRows.length) {
+    add('breadth', `<div class="minitable-wrap">${MiniTable({ label: 'MARKET BREADTH', ico: '↔️', rows: breadthRows })}</div>`);
+  }
+
+  // 6 — FII / DII
+  const flowRows = [];
+  if (brief.flows?.fii?.value != null) {
+    flowRows.push({ label: 'FII', value: brief.flows.fii.value, cls: brief.flows.fii.value >= 0 ? 'up' : 'down' });
+  }
+  if (brief.flows?.dii?.value != null) {
+    flowRows.push({ label: 'DII', value: brief.flows.dii.value, cls: brief.flows.dii.value >= 0 ? 'up' : 'down' });
+  }
+  if (flowRows.length) {
+    add('flows', `<div class="minitable-wrap">${MiniTable({ label: 'INSTITUTIONAL FLOWS', ico: '🏦', rows: flowRows })}</div>`);
+  }
+
+  // 7/8 — movers
+  const gainers = brief.movers?.gainers ?? [];
+  const losers = brief.movers?.losers ?? [];
+  if (gainers.length) {
+    add(
+      'gainers',
+      `<section class="sec" data-sec="gainers">
+         <h2 class="sec-h"><span class="ico">📈</span>TOP GAINERS</h2>
+         <div class="rows">${gainers
+           .map((g) => `<div class="row"><span class="sym">${esc(g.name)}</span><span class="num up">${
+             g.value != null ? esc(String(g.value)) : ''
+           }<span class="sub"> ${esc(`${g.pct_change > 0 ? '+' : ''}${Number(g.pct_change).toFixed(2)}%`)}</span></span></div>`)
+           .join('')}</div>
+       </section>`
+    );
+  }
+  if (losers.length) {
+    add(
+      'losers',
+      `<section class="sec" data-sec="losers">
+         <h2 class="sec-h"><span class="ico">📉</span>TOP LOSERS</h2>
+         <div class="rows">${losers
+           .map((g) => `<div class="row"><span class="sym">${esc(g.name)}</span><span class="num down">${
+             g.value != null ? esc(String(g.value)) : ''
+           }<span class="sub"> ${esc(`${Number(g.pct_change).toFixed(2)}%`)}</span></span></div>`)
+           .join('')}</div>
+       </section>`
+    );
+  }
+
+  // 9 — sector movement
+  const sectors = brief.sector_performance ?? [];
+  if (sectors.length) {
+    add(
+      'sectorperf',
+      `<section class="sec" data-sec="sectorperf">
+         <h2 class="sec-h"><span class="ico">🏭</span>SECTOR MOVEMENT</h2>
+         <div class="rows">${sectors
+           .map(
+             (s) =>
+               `<div class="row"><span class="sym">${esc(s.name)}</span><span class="num ${
+                 s.pct_change > 0 ? 'up' : s.pct_change < 0 ? 'down' : 'flat'
+               }">${esc(`${s.pct_change > 0 ? '+' : ''}${Number(s.pct_change).toFixed(2)}%`)}</span></div>`
+           )
+           .join('')}</div>
+       </section>`
+    );
+  }
+
+  // 10 — tomorrow's watch (one group heading; the sub-blocks stay unlabelled so
+  // the page doesn't shout the same idea twice)
+  out.push(heading('h-watch', 'TOMORROW’S WATCH', '🔭'));
+  add('watch-stocks', StockWatch({ stocks: brief.stocks_to_watch, heading: '' }));
+  add('watch-sectors', SectorWatch({ sectors: brief.sectors_to_watch, heading: '' }));
+  if (!brief.stocks_to_watch?.length && !brief.sectors_to_watch?.length) {
+    add('watch-empty', noteBox('No watch-list candidates surfaced from today’s stories.'));
+  }
+
+  // 11/12 — catalysts + risks
+  add('catalysts', CatalystsRisks({ catalysts: brief.catalysts, risks: brief.risks }));
+
+  // 13 — interpretation
+  add('view', ViewCard({ view: brief.view }));
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// PLAN
+// ---------------------------------------------------------------------------
+
+const TITLES = {
+  premarket: 'PRE-MARKET INTELLIGENCE',
+  closing: 'MARKET CLOSE',
+};
+
+const KICKERS = {
+  premarket: 'GLOBAL OVERNIGHT • SESSION RECAP • TODAY’S AGENDA',
+  closing: null,
+};
+
+/**
+ * Build the pagination plan for a briefing.
+ *
+ * Returns two header variants — page 1 gets the full masthead, later pages get
+ * a compact continuation masthead so a photo arriving on its own still says
+ * what it is. Their heights are measured like any other fragment.
+ */
+export function buildPagePlan(brief, { type = 'premarket', now = new Date() } = {}) {
+  const title = TITLES[type] ?? TITLES.premarket;
+  const sections = type === 'closing' ? closingSections(brief, now) : premarketSections(brief, now);
+
+  const header = (page, pageCount) =>
+    Header({
+      title,
+      calendar: brief.calendar,
+      now,
+      kicker: page === 1 ? (KICKERS[type] ?? null) : null,
+      page,
+      pageCount,
+    });
+  const footer = (page, pageCount) =>
+    Footer({
+      sources: brief.sources ?? [],
+      now,
+      sample: Boolean(brief.sample),
+      page,
+      pageCount,
+    });
+
+  return {
+    type,
+    now,
+    title,
+    cap: brief.imageCap ?? 3, // current card budget — the packer may ask for less
+    sample: Boolean(brief.sample),
+    calendar: brief.calendar ?? null,
+    sources: brief.sources ?? [],
+    // Measurement placeholders. The page counter sits in the brand rows and can
+    // push them onto a second line, so the placeholder is deliberately the
+    // widest string we will ever render ("PAGE 99 / 99"): measured height is
+    // then always >= the real one, which means the render can only ever have
+    // slack — never an overflow.
+    header1: { key: '__header1', html: wrapFrag('__header1', header(1, 99)) },
+    headerN: { key: '__headerN', html: wrapFrag('__headerN', header(2, 99)) },
+    footer: { key: '__footer', html: wrapFrag('__footer', footer(1, 99)) },
+    // Built at render time, when the real pageCount is finally known.
+    renderHeader: (page, pageCount) => wrapFrag(page === 1 ? '__header1' : '__headerN', header(page, pageCount)),
+    renderFooter: (page, pageCount) => wrapFrag('__footer', footer(page, pageCount)),
+    sections,
   };
-  const now = new Date(brief.generated_at ?? Date.now());
-  const statusLabel = brief.status_label ?? 'REPORTED';
-  const statusClass = brief.status_class ?? 'b-reported';
+}
+
+/**
+ * Pack fragments into pages of at most `maxContent` logical px.
+ *
+ * `keepWithNext` prevents a section heading being stranded at the foot of a
+ * page with its first card on the next one.
+ *
+ * The page cap is ADVISORY: content is never discarded and never clipped, so
+ * when a plan is larger than the cap the packer keeps going rather than
+ * inflating the final page past the ceiling. `renderPlanPages` warns when that
+ * happens, and a hard safety limit aborts the render instead of producing an
+ * absurd image.
+ */
+export function packPages({
+  header1Key,
+  headerNKey,
+  sections,
+  heights,
+  maxContent,
+  maxPages = VISUAL_DEFAULTS.maxPages,
+  hardMaxPages = 12,
+}) {
+  const pages = [];
+  let current = null;
+
+  const newPage = (headerKey) => {
+    current = { headerKey, keys: [], used: heights[headerKey] ?? 0 };
+    pages.push(current);
+  };
+
+  newPage(header1Key);
+
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i];
+    const h = heights[s.key] ?? 0;
+    const gap = current.keys.length ? FRAG_GAP : 0;
+    const next = sections[i + 1];
+
+    // LOOKAHEAD: a `keepWithNext` heading is only placed if the block it
+    // introduces also fits. Testing the heading alone would strand it at the
+    // foot of a page — the classic orphaned section title.
+    const withNext =
+      s.keepWithNext && next ? FRAG_GAP + (heights[next.key] ?? 0) : 0;
+
+    // The previous fragment is itself a heading that must travel with `s`; if
+    // we break now it would be left alone, so `s` goes on this page regardless.
+    const lastIsOrphanHeading =
+      current.keys.length > 0 &&
+      current.keys[current.keys.length - 1].keepWithNext;
+
+    // Never break on the FIRST section of a page either — a block taller than
+    // a whole page must still be placed, or it would spin out empty pages.
+    if (current.keys.length > 0 && !lastIsOrphanHeading && current.used + gap + h + withNext > maxContent) {
+      if (pages.length >= hardMaxPages) {
+        throw new Error(
+          `plan needs more than ${hardMaxPages} pages — refusing to render an unreadable ${hardMaxPages}-image set`
+        );
+      }
+      newPage(headerNKey);
+    }
+    current.keys.push(s);
+    current.used += current.keys.length > 1 ? FRAG_GAP + h : h;
+  }
+
+  void maxPages;
+  return pages;
+}
+
+/**
+ * Render ONE page of a plan to a full HTML document.
+ *
+ * `exact: true` pins the poster to the measured height so the footer's
+ * `margin-top:auto` has zero slack — this is what removes the empty lower area.
+ */
+export function renderPageDoc(plan, page, { height, width, scale, pageIndex = 1, pageCount = 1 }) {
+  const headerHtml = pageIndex === 1 ? plan.header1.html : plan.renderHeader(pageIndex, pageCount);
+  const footerHtml = plan.renderFooter(pageIndex, pageCount);
+  const body = headerHtml + page.keys.map((s) => s.html).join('') + footerHtml;
+  return doc(
+    baseCss({ vw: Math.round(width / scale), vh: Math.round(height / scale) }),
+    Poster({ body, width, height, scale, exact: true })
+  );
+}
+
+/** Content height of a packed page (padding + fragments + inter-fragment gaps). */
+export function packedContentHeight(page, heights) {
+  const keys = [page.headerKey, ...page.keys.map((s) => s.key), '__footer'];
+  if (!keys.length) return PAGE_PAD;
+  let sum = 0;
+  for (const k of keys) sum += heights[k] ?? 0;
+  return PAGE_PAD + sum + FRAG_GAP * (keys.length - 1);
+}
+
+// ---------------------------------------------------------------------------
+// SINGLE-DOCUMENT RENDERERS (tests, previews, alert)
+// ---------------------------------------------------------------------------
+
+/** Assemble a plan's fragments into a single document (no pagination). */
+function singleDoc(plan, dims, sections) {
+  const { width, height, scale = VISUAL_DEFAULTS.scale } = dims;
+  const vw = Math.round(width / scale);
+  const vh = Math.round(height / scale);
+  const body = plan.header1.html + sections.join('') + plan.footer.html;
+  return doc(baseCss({ vw, vh }), Poster({ body, width, height, scale, exact: false }));
+}
+
+/** All fragments of a plan, in measurement order. */
+export function planFragments(plan) {
+  return [plan.header1, plan.headerN, plan.footer, ...plan.sections];
+}
+
+export function renderPreMarketHtml(brief, dims = {}, opts = {}) {
+  const plan = buildPagePlan(brief, { type: 'premarket', now: opts.now ?? new Date() });
+  return singleDoc(plan, dims, plan.sections.map((s) => s.html));
+}
+
+export function renderClosingHtml(brief, dims = {}, opts = {}) {
+  const plan = buildPagePlan(brief, { type: 'closing', now: opts.now ?? new Date() });
+  return singleDoc(plan, dims, plan.sections.map((s) => s.html));
+}
+
+// ---------------------------------------------------------------------------
+// BREAKING ALERT (fixed 1080×1080)
+// ---------------------------------------------------------------------------
+
+const IMPACT_TEXT = { positive: 'POSITIVE', negative: 'NEGATIVE', mixed: 'MIXED', neutral: 'NEUTRAL' };
+
+export function renderAlertHtml(brief, dims = {}) {
+  const { width = VISUAL_DEFAULTS.alertWidth, height = VISUAL_DEFAULTS.alertHeight, scale = VISUAL_DEFAULTS.scale } = dims;
+  // `exact: false` is the measuring pass: the poster grows to its natural height
+  // so renderFittedPng can size the final canvas to the content.
+  const exact = dims.exact !== false;
+  const vw = Math.round(width / scale);
+  const vh = Math.round(height / scale);
   const impact = brief.impact
-    ? `<span class="impact i-${brief.impact}">${String(brief.impact).toUpperCase()}</span>`
+    ? `<span class="impact i-${brief.impact}">${IMPACT_TEXT[brief.impact] ?? esc(brief.impact)}</span>`
     : '';
+  const statusClass = {
+    Confirmed: 'b-confirmed',
+    Reported: 'b-reported',
+    'Awaiting official confirmation': 'b-awaiting',
+    Unconfirmed: 'b-unconfirmed',
+  }[brief.status];
+  const when = brief.published_at ? new Date(brief.published_at) : null;
+  const sourceName = brief.source_name ? esc(brief.source_name) : 'Source unavailable';
+  const link = brief.source_url ? `<a href="${esc(brief.source_url)}">${sourceName}</a>` : sourceName;
 
   const body = `
-<div class="hd">
   ${brief.sample ? '<span class="sample">SAMPLE / TEST DATA</span>' : ''}
   <div class="al-head">
-    <span class="al-kicker">🚨 MARKET ALERT</span>
-    <span class="brand" style="font-size:13px"><span class="bolt">⚡</span>${esc(
-      theme.brand.name
-    )}</span>
+    <span class="al-kicker">⚡ BREAKING MARKET ALERT</span>
+    <span class="al-cat">${esc(brief.category)}</span>
   </div>
-  <div class="rule" style="margin-top:6px"></div>
-  <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-    <span class="al-cat">${esc(brief.category ?? 'MARKET')}</span>
-    <span class="badge ${statusClass}">${esc(statusLabel)}</span>
-    ${impact}
-  </div>
-  <h1 class="al-headline">${esc(brief.headline ?? 'Market alert')}</h1>
-  ${
-    brief.summary
-      ? `<p class="al-sum">${esc(truncate(brief.summary, 300))}</p>`
-      : ''
-  }
-  ${
-    brief.why_it_matters
-      ? `<div class="lbl-mini">WHY IT MATTERS</div>
-  <p class="al-sum" style="font-size:13px">${esc(truncate(brief.why_it_matters, 220))}</p>`
-      : ''
-  }
-  ${
-    (brief.stocks?.length || brief.sectors?.length)
-      ? `<div class="lbl-mini">AFFECTED</div>
+  <div class="rule" style="margin-top:8px"></div>
+  <div class="al-headline">${esc(brief.headline)}</div>
+  ${brief.summary ? `<div class="al-sum">${esc(brief.summary)}</div>` : ''}
+  ${brief.why_it_matters ? `<div class="why"><span class="why-l">Why it matters</span><p>${esc(brief.why_it_matters)}</p></div>` : ''}
+  <div class="lbl-mini">AFFECTED</div>
   <div class="chips">
-    ${(brief.stocks ?? []).map((s) => `<span class="chip">${esc(String(s).toUpperCase())}</span>`).join('')}
-    ${(brief.sectors ?? []).map((s) => `<span class="chip">${esc(String(s).toUpperCase())}</span>`).join('')}
-  </div>`
-      : ''
-  }
-  ${
-    brief.source_name
-      ? `<div class="src" style="display:flex;justify-content:space-between;margin-top:12px;font-size:11px;color:${theme.colors.muted}">
-    <span>${
-      brief.source_url
-        ? `<a href="${esc(brief.source_url)}" style="color:${theme.colors.muted}">${esc(brief.source_name)}</a>`
-        : esc(brief.source_name)
-    }${
-      brief.published_at && Number.isFinite(Date.parse(brief.published_at))
-        ? ' • ' + esc(fmtTime(new Date(brief.published_at)))
-        : ''
-    }</span>
-    <span>${esc(fmtDateShort(now))}</span>
-  </div>`
-      : ''
-  }
-</div>
-${Footer({ sources: brief.source_name ? [{ name: brief.source_name }] : [], now, sample: brief.sample })}`;
-
-  return doc(baseCssFor(dims), Poster({ body, ...dims }));
-}
-
-// ------------------------------------------------------------------- PDF
-
-const pdfDoc = (css, body) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${css}</style></head><body class="pdf">${body}</body></html>`;
-
-const pdfFooter = (now, sample) => `
-<div class="ft">
-  ⚡ ${esc(theme.brand.name)} • ${esc(theme.brand.tagline)} — Generated ${esc(
-    fmtDateShort(now)
-  )} • ${esc(fmtTime(now))}${sample ? ' • SAMPLE / TEST DATA' : ''}<br>
-  <span style="color:${theme.colors.warning}">For informational purposes only. Not investment advice.</span>
-</div>`;
-
-/**
- * A4 portrait PDF (§15): 4 pages — executive summary, market & global,
- * developments, stocks/sectors/risks/view. Text selectable, links clickable.
- */
-export function renderPdfHtml(brief = {}, { type = 'premarket' } = {}) {
-  const now = new Date(brief.generated_at ?? Date.now());
-  const isClosing = type === 'closing';
-  const title = isClosing ? 'MARKET CLOSE' : 'PRE-MARKET INTELLIGENCE';
-  const developments = brief.top_developments ?? [];
-  const status = brief.calendar?.closed
-    ? brief.calendar.closedLabel ?? 'MARKET CLOSED'
-    : brief.calendar?.kind === 'holiday'
-      ? 'NSE HOLIDAY'
-      : 'TRADING DAY';
-
-  const pulseTable = ['nifty', 'banknifty', 'sensex']
-    .map((k) => {
-      const row = brief.market?.[k];
-      const label = k === 'nifty' ? 'NIFTY 50' : k === 'banknifty' ? 'BANK NIFTY' : 'SENSEX';
-      return `<tr><td>${label}</td><td class="n">${row ? num(row.value) : 'N/A'}</td><td class="n">${
-        row ? (row.pct_change != null ? fmtPct(row.pct_change) : 'N/A') : 'N/A'
-      }</td></tr>`;
-    })
-    .join('');
-
-  const globalRows = (brief.global ?? [])
-    .flatMap((g) =>
-      g.items.map(
-        (it) =>
-          `<tr><td>${esc(g.group)}</td><td>${esc(it.name)}</td><td class="n">${
-            it.value != null ? num(it.value) : 'N/A'
-          }</td><td class="n">${it.pct_change != null ? fmtPct(it.pct_change) : 'N/A'}</td></tr>`
-      )
-    )
-    .join('');
-
-  const storyHtml = (s) => `
-<article class="story">
-  <div class="dim">${String(s.rank).padStart(2, '0')} • ${esc(s.category)}${
-    s.updated ? ' • UPDATED' : ''
-  } • ${esc(s.status)}</div>
-  <h3>${esc(s.headline)}</h3>
-  ${s.summary ? `<p>${esc(s.summary)}</p>` : ''}
-  ${s.why_it_matters ? `<p><b>WHY IT MATTERS:</b> ${esc(s.why_it_matters)}</p>` : ''}
-  <div class="src">Source: ${
-    s.source_url
-      ? `<a href="${esc(s.source_url)}">${esc(s.source_name ?? 'unknown')}</a>`
-      : esc(s.source_name ?? 'unknown')
-  }${s.published_at && Number.isFinite(Date.parse(s.published_at)) ? ` • ${esc(fmtTime(new Date(s.published_at)))}` : ''}</div>
-</article>`;
-
-  const stockRows = (brief.stocks_to_watch ?? [])
-    .map((s) => `<tr><td><b>${esc(s.symbol)}</b></td><td>${esc(s.reason)}</td></tr>`)
-    .join('');
-  const sectorRows = (brief.sectors_to_watch ?? [])
-    .map((s) => `<tr><td><b>${esc(s.sector)}</b></td><td>${esc(s.reason)}</td></tr>`)
-    .join('');
-
-  const listBlock = (title, items) =>
-    items.length
-      ? `<h2>${title}</h2><ul style="margin-left:14pt">${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`
-      : '';
-
-  const sourceLinks = (brief.sources ?? [])
-    .map((s) => (s.url ? `<a href="${esc(s.url)}">${esc(s.name)}</a>` : esc(s.name)))
-    .join(' • ');
-
-  return pdfDoc(
-    baseCssFor({ width: 0, height: 0, scale: 1 }),
-    `
-<section class="page">
-  <div class="brand" style="font-size:16pt">⚡ ${esc(theme.brand.name)}</div>
-  <div class="rule" style="margin-top:4pt"></div>
-  <h1>${esc(title)}</h1>
-  <div class="dim">${esc(brief.calendar?.weekday ?? '')} • ${esc(
-    brief.calendar?.dateLong ?? brief.date ?? ''
-  )} • ${esc(brief.calendar?.time ?? '')} • ${esc(status)}</div>
-  <h2>EXECUTIVE SUMMARY</h2>
-  ${
-    brief.view
-      ? `<div class="view"><span class="lbl">🎯 NEW AGE ALGOS VIEW</span>${esc(brief.view)}</div>`
-      : '<p class="dim">No AI-produced view available for this briefing.</p>'
-  }
-  <h2>MARKET PULSE</h2>
-  <table>${pulseTable}</table>
-  <h2>TODAY'S TOP DEVELOPMENTS</h2>
-  ${
-    developments.length
-      ? developments
-          .slice(0, 3)
-          .map((d) => `<p><b>${String(d.rank).padStart(2, '0')} • ${esc(d.headline)}</b></p>`)
-          .join('')
-      : '<p class="dim">No material developments in the freshness window.</p>'
-  }
-  ${pdfFooter(now, brief.sample)}
-</section>
-
-<section class="page">
-  <h2>MARKET &amp; GLOBAL CUES</h2>
-  <table>
-    <tr><td><b>INDEX</b></td><td class="n"><b>VALUE</b></td><td class="n"><b>CHANGE</b></td></tr>
-    ${pulseTable}
-  </table>
-  ${
-    isClosing && brief.breadth
-      ? `<h2>MARKET BREADTH</h2><table>
-      <tr><td>ADVANCES</td><td class="n">${brief.breadth.advances ? num(brief.breadth.advances.value) : 'N/A'}</td></tr>
-      <tr><td>DECLINES</td><td class="n">${brief.breadth.declines ? num(brief.breadth.declines.value) : 'N/A'}</td></tr>
-    </table>`
-      : ''
-  }
-  ${
-    isClosing && brief.flows
-      ? `<h2>FII / DII</h2><table>
-      ${brief.flows.fii ? `<tr><td>FII</td><td class="n">${num(brief.flows.fii.value)}</td></tr>` : ''}
-      ${brief.flows.dii ? `<tr><td>DII</td><td class="n">${num(brief.flows.dii.value)}</td></tr>` : ''}
-    </table>`
-      : ''
-  }
-  ${
-    globalRows
-      ? `<h2>GLOBAL CUES</h2><table>
-    <tr><td><b>GROUP</b></td><td><b>INSTRUMENT</b></td><td class="n"><b>VALUE</b></td><td class="n"><b>CHANGE</b></td></tr>
-    ${globalRows}</table>`
-      : '<p class="dim">Global data unavailable.</p>'
-  }
-  ${
-    isClosing && brief.sector_performance?.length
-      ? `<h2>SECTOR PERFORMANCE</h2><table>${brief.sector_performance
-          .map(
-            (r) =>
-              `<tr><td>${esc(r.name)}</td><td class="n">${fmtPct(r.pct_change)}</td></tr>`
-          )
-          .join('')}</table>`
-      : ''
-  }
-  ${pdfFooter(now, brief.sample)}
-</section>
-
-<section class="page">
-  <h2>TOP DEVELOPMENTS</h2>
-  ${
-    developments.length
-      ? developments.map(storyHtml).join('')
-      : '<p class="dim">No material developments in the freshness window.</p>'
-  }
-  ${
-    isClosing && brief.key_driver
-      ? `<h2>WHAT DROVE THE MARKET</h2><p>${esc(brief.key_driver.headline)}</p>`
-      : ''
-  }
-  ${pdfFooter(now, brief.sample)}
-</section>
-
-<section class="page">
-  <h2>STOCKS TO WATCH</h2>
-  ${stockRows ? `<table>${stockRows}</table>` : '<p class="dim">No stocks surfaced by fresh events.</p>'}
-  <h2>SECTORS TO WATCH</h2>
-  ${sectorRows ? `<table>${sectorRows}</table>` : '<p class="dim">No sectors surfaced by fresh events.</p>'}
-  <div class="cols">
-    <div>${listBlock('KEY CATALYSTS', brief.catalysts ?? [])}</div>
-    <div>${listBlock('KEY RISKS', brief.risks ?? [])}</div>
+    ${brief.stocks.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}
+    ${brief.sectors.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}
   </div>
-  ${
-    brief.view
-      ? `<div class="view"><span class="lbl">🎯 NEW AGE ALGOS VIEW</span>${esc(brief.view)}</div>`
-      : ''
-  }
-  ${sourceLinks ? `<h2>SOURCES</h2><p class="src">${sourceLinks}</p>` : ''}
-  ${pdfFooter(now, brief.sample)}
-</section>`
+  <div class="lbl-mini">IMPACT / CONFIRMATION</div>
+  <div class="badges-row">${impact}<span class="badge ${statusClass}">${esc(brief.status_label)}</span></div>
+  <div class="al-src">
+    <span>${link}${when ? ` • ${esc(brief.published_at.slice(11, 16))} IST` : ''}</span>
+    <span>Impact: <b>${esc(IMPACT_TEXT[brief.impact] ?? '—')}</b></span>
+  </div>
+  <div class="ft">
+    <div class="line1">
+      <span class="bname">⚡ ${esc(theme.brand.name)}</span>
+      <span class="btag">${esc(theme.brand.tagline)}</span>
+    </div>
+    <div class="meta">
+      Generated: <b>${esc(brief.date)}</b><br>
+      <span class="disc">For informational purposes only. Not investment advice.</span>
+    </div>
+  </div>`;
+
+  return doc(
+    baseCss({ vw, vh, alert: true }) +
+      `.badges-row{display:flex;gap:8px;margin-top:6px}` +
+      `.al-src{margin-top:auto;padding-top:10px;border-top:1px solid ${theme.colors.border};` +
+      `display:flex;justify-content:space-between;gap:10px;font-size:${theme.type.meta}px;color:${theme.colors.muted}}` +
+      `.al-src a{color:${theme.colors.muted}}`,
+    Poster({ body, width, height, scale, exact })
   );
 }
 
-// ----------------------------------------------------------------- helper
+// ---------------------------------------------------------------------------
+// PDF (A4, 4 pages, full text)
+// ---------------------------------------------------------------------------
 
-/** Layout CSS for a template at its logical dimensions. */
-function baseCssFor(dims) {
-  const scale = dims.scale || VISUAL_DEFAULTS.scale;
-  return baseCss({
-    vw: Math.round(dims.width / scale),
-    vh: Math.round(dims.height / scale),
-    alert: dims.height <= dims.width, // square alert template gets tighter padding
-  });
+const pdfRow = (label, row) =>
+  row
+    ? `<tr><td>${esc(label)}</td><td class="n">${row.value != null ? row.value.toLocaleString('en-IN') : 'N/A'}</td><td class="n">${
+        row.pct_change != null ? `${row.pct_change > 0 ? '+' : ''}${row.pct_change.toFixed(2)}%` : '—'
+      }</td></tr>`
+    : '';
+
+const pdfStory = (s) => `
+<div class="story">
+  <div class="dim">${String(s.rank).padStart(2, '0')} • ${esc(s.category)}${
+    s.tag?.label ? ` • ${esc(s.tag.emoji)} ${esc(s.tag.label)}` : ''
+  }</div>
+  <h3>${esc(s.headline)}</h3>
+  ${s.summary ? `<div class="sum">${esc(s.summary)}</div>` : ''}
+  ${
+    s.why_it_matters
+      ? `<div class="why"><span class="why-l">Why it matters</span>${esc(s.why_it_matters)}</div>`
+      : ''
+  }
+  <div class="src">${esc(s.source_name ?? 'Source unavailable')}${
+    s.published_at ? ` • ${esc(s.published_at.slice(0, 16).replace('T', ' '))}` : ''
+  } • ${esc(s.status)}${s.supporting_sources?.length ? ` • also: ${esc(s.supporting_sources.map((x) => x.name).join(', '))}` : ''}</div>
+</div>`;
+
+const pdfPage = (title, body, sources = [], now = new Date()) => `
+<div class="page">
+  <div class="brand"><span class="bolt">⚡</span>${esc(theme.brand.name)}</div>
+  <h1>${esc(title)}</h1>
+  <div class="dim">${esc(now.toISOString().slice(0, 16).replace('T', ' '))} UTC</div>
+  ${body}
+  <div class="ft">⚡ ${esc(theme.brand.name)} — ${
+    sources.length ? `Sources: ${esc(sources.map((s) => s.name).join(', '))}. ` : ''
+  }For informational purposes only. Not investment advice.</div>
+</div>`;
+
+/** 4-page A4 PDF: Executive / Market+Global / Developments / Stocks-Sectors. */
+export function renderPdfHtml(brief, dims = {}) {
+  const now = new Date();
+  const width = dims.width ?? VISUAL_DEFAULTS.width;
+  const vw = Math.round(width / (dims.scale ?? VISUAL_DEFAULTS.scale));
+
+  const p1 = [
+    brief.driver ? `<div class="takeaway"><span class="lbl">WHAT DROVE THE MARKET</span><p>${esc(brief.driver)}</p></div>` : '',
+    `<h2>Market pulse</h2><table>${pdfRow('NIFTY 50', brief.market.nifty)}${pdfRow('BANK NIFTY', brief.market.banknifty)}${pdfRow('SENSEX', brief.market.sensex)}</table>`,
+    brief.keep_an_eye?.length
+      ? `<h2>Keep an eye on today</h2>${brief.keep_an_eye
+          .map((r) => `<p><b>${esc(r.tag?.emoji ?? '')} ${esc(r.label)}</b> — ${esc(r.text)}</p>`)
+          .join('')}`
+      : '',
+    brief.view ? `<div class="view"><span class="lbl">🎯 NEW AGE ALGOS VIEW</span>${esc(brief.view)}</div>` : '',
+  ].join('');
+
+  const p2 = [
+    `<h2>Global cues</h2>${
+      brief.global?.length
+        ? brief.global
+            .map(
+              (g) =>
+                `<p><b>${esc(g.group)}</b><br>${g.items
+                  .map((i) => `${esc(i.name)}: ${i.value ?? 'N/A'}${i.pct_change != null ? ` (${i.pct_change > 0 ? '+' : ''}${i.pct_change.toFixed(2)}%)` : ''}`)
+                  .join(' • ')}</p>`
+            )
+            .join('')
+        : '<p>No global snapshot available for this window.</p>'
+    }`,
+    brief.breadth
+      ? `<h2>Breadth</h2><table>${pdfRow('ADVANCES', brief.breadth.advances)}${pdfRow('DECLINES', brief.breadth.declines)}</table>`
+      : '',
+    brief.flows ? `<h2>FII / DII</h2><table>${pdfRow('FII', brief.flows.fii)}${pdfRow('DII', brief.flows.dii)}</table>` : '',
+    brief.sector_performance?.length
+      ? `<h2>Sector movement</h2><table>${brief.sector_performance
+          .map(
+            (s) =>
+              `<tr><td>${esc(s.name)}</td><td class="n">${s.pct_change > 0 ? '+' : ''}${Number(s.pct_change).toFixed(2)}%</td></tr>`
+          )
+          .join('')}</table>`
+      : '',
+  ].join('');
+
+  // The PDF is the record: it reads from the wide list, not the image's cut.
+  const pdfDevelopments = brief.developments_full ?? brief.developments ?? [];
+  const p3 = pdfDevelopments.length
+    ? `<h2>Detailed developments</h2>${pdfDevelopments.map(pdfStory).join('')}`
+    : '<h2>Detailed developments</h2><p>No individual developments recorded for this window.</p>';
+
+  const p4 = [
+    `<h2>Stocks to watch</h2>${
+      brief.stocks_to_watch?.length
+        ? brief.stocks_to_watch.map((s) => `<p><b>${esc(s.symbol)}</b> — ${esc(s.reason)}</p>`).join('')
+        : '<p>None.</p>'
+    }`,
+    `<h2>Sectors to watch</h2>${
+      brief.sectors_to_watch?.length
+        ? brief.sectors_to_watch.map((s) => `<p><b>${esc(s.sector)}</b> — ${esc(s.reason)}</p>`).join('')
+        : '<p>None.</p>'
+    }`,
+    brief.catalysts?.length ? `<h2>Catalysts</h2>${brief.catalysts.map((c) => `<p>• ${esc(c)}</p>`).join('')}` : '',
+    brief.risks?.length ? `<h2>Risks</h2>${brief.risks.map((c) => `<p>• ${esc(c)}</p>`).join('')}` : '',
+  ].join('');
+
+  const title = TITLES[brief.type] ?? TITLES.premarket;
+  return doc(
+    baseCss({ vw, vh: 0 }),
+    `<div class="pdf">` +
+      pdfPage(`${title} — Executive`, p1, brief.sources, now) +
+      pdfPage(`${title} — Market & Global`, p2, brief.sources, now) +
+      pdfPage(`${title} — Detailed developments`, p3, brief.sources, now) +
+      pdfPage(`${title} — Stocks, sectors & watch`, p4, brief.sources, now) +
+      `</div>`
+  );
 }

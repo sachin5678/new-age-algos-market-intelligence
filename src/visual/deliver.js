@@ -12,18 +12,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { buildVisualBriefing, buildAlertBriefing } from '../visual/data.js';
 import {
-  renderPreMarketHtml,
-  renderClosingHtml,
+  buildPagePlan,
   renderAlertHtml,
   renderPdfHtml,
 } from '../visual/templates.js';
+import { visualDimensions, VISUAL_DEFAULTS } from '../visual/theme.js';
 import {
-  renderPng,
+  renderPlanPages,
+  renderFittedPng,
   renderPdf,
   validateImage,
   validatePdf,
   saveVisual,
-  visualFileName,
   RenderError,
 } from '../visual/render.js';
 
@@ -41,7 +41,15 @@ export class VisualDeliver {
     this.dryRun = String(env.DRY_RUN ?? 'false').toLowerCase() === 'true';
   }
 
-  /** Send a daily briefing (premarket or closing) as image + optional PDF. */
+  /**
+   * Send a daily briefing (premarket or closing) as one or more images plus an
+   * optional PDF.
+   *
+   * Layout is CONTENT-FIRST (PART 2/17/20): the plan is measured, packed into
+   * pages no taller than VISUAL_HEIGHT, and each page gets the smallest height
+   * that contains it. Page 1 always goes out; continuation pages follow only
+   * when the content genuinely needs them.
+   */
   async sendBriefing({ type, snapshots, events, now, runId }) {
     if (!this.enabled) {
       this.logger?.info('VISUAL', 'disabled — skipping image render');
@@ -50,75 +58,93 @@ export class VisualDeliver {
 
     const holidays = this.settings.holidays ?? [];
     const marketHours = this.settings.marketHours ?? {};
-    const brief = buildVisualBriefing({
-      type,
-      snapshots,
-      events,
-      now,
-      holidays,
-      marketHours,
-      sample: false,
-    });
+    const makeBrief = (imageCap) =>
+      buildVisualBriefing({ type, snapshots, events, now, holidays, marketHours, sample: false, imageCap });
+
+    let brief = makeBrief();
+    let plan = buildPagePlan(brief, { type, now });
 
     try {
-      const dims = type === 'alert'
-        ? { width: 1080, height: 1080 }
-        : { width: 1080, height: 1350 };
-
-      // Render PNG
-      const html = type === 'closing'
-        ? renderClosingHtml(brief, dims)
-        : renderPreMarketHtml(brief, dims);
-
-      const pngResult = await renderPng({ html, ...dims, scale: 2 });
-      const pngQA = validateImage({ buffer: pngResult.buffer, ...dims, html, brief });
-      if (!pngQA.ok) {
-        throw new RenderError(`PNG QA failed: ${pngQA.problems.join('; ')}`);
+      const dims = visualDimensions(this.env, type);
+      const { pages, imageCap } = await renderPlanPages({
+        plan,
+        dims,
+        logger: this.logger,
+        // SELF-SIZING: if the plan would overrun the target page count the
+        // renderer asks for a briefing with fewer full-width cards and
+        // re-measures. Story text is never shortened — we show fewer stories,
+        // never smaller ones (PART 17/20).
+        replan: (cap) => {
+          brief = makeBrief(cap);
+          plan = buildPagePlan(brief, { type, now });
+          return plan;
+        },
+      });
+      if (imageCap !== undefined) {
+        this.logger?.info('VISUAL', `poster rendered at imageCap=${imageCap}, pages=${pages.length}`);
       }
 
-      // Save PNG
-      const pngPath = saveVisual({
-        buffer: pngResult.buffer,
-        type,
-        now,
-        ext: 'png',
-      });
-      this.logger?.info('VISUAL', `PNG saved: ${pngPath} (${pngResult.buffer.length} bytes, ${pngResult.ms}ms)`);
+      const pngPaths = [];
+      for (const p of pages) {
+        const qa = validateImage({ buffer: p.buffer, width: p.width, height: p.height, html: p.html, brief });
+        if (!qa.ok) throw new RenderError(`PNG QA failed on page ${p.index + 1}: ${qa.problems.join('; ')}`);
+        const file = saveVisual({
+          buffer: p.buffer,
+          type,
+          now,
+          ext: 'png',
+          page: p.index + 1,
+          pageCount: pages.length,
+        });
+        pngPaths.push(file);
+        this.logger?.info(
+          'VISUAL',
+          `PNG saved: ${file} (${p.buffer.length} bytes, ${p.width}×${p.height}, page ${p.index + 1}/${pages.length})`
+        );
+      }
 
       // Optional PDF
       let pdfPath = null;
-      if (this.pdfEnabled && type !== 'alert') {
+      if (this.pdfEnabled) {
         const pdfHtml = renderPdfHtml(brief, { type });
         const pdfResult = await renderPdf({ html: pdfHtml });
         const pdfQA = validatePdf({ buffer: pdfResult.buffer });
         if (!pdfQA.ok) {
           this.logger?.warn('VISUAL', `PDF QA failed (continuing without PDF): ${pdfQA.problems.join('; ')}`);
         } else {
-          pdfPath = saveVisual({
-            buffer: pdfResult.buffer,
-            type,
-            now,
-            ext: 'pdf',
-          });
+          pdfPath = saveVisual({ buffer: pdfResult.buffer, type, now, ext: 'pdf' });
           this.logger?.info('VISUAL', `PDF saved: ${pdfPath} (${pdfResult.buffer.length} bytes, ${pdfResult.ms}ms)`);
         }
       }
 
-      // Send via transport
+      const caption = this.buildCaption(brief, type, { page: 1, pageCount: pages.length });
+
       if (!this.dryRun) {
-        const caption = this.buildCaption(brief, type);
-        await this.transport.sendPhoto(pngPath, caption, { mode: type, runId });
-        this.logger?.info('VISUAL', `PNG sent via transport`);
+        await this.transport.sendPhoto(pngPaths[0], caption, { mode: type, runId });
+        this.logger?.info('VISUAL', `PNG sent via transport (page 1/${pages.length})`);
+
+        // Continuation pages only exist when there is more to read (PART 17).
+        for (let i = 1; i < pngPaths.length; i++) {
+          await this.transport.sendPhoto(
+            pngPaths[i],
+            this.buildCaption(brief, type, { page: i + 1, pageCount: pages.length }),
+            { mode: type, runId }
+          );
+          this.logger?.info('VISUAL', `PNG sent via transport (page ${i + 1}/${pages.length})`);
+        }
 
         if (pdfPath) {
           await this.transport.sendDocument(pdfPath, caption, { mode: type, runId });
           this.logger?.info('VISUAL', `PDF sent via transport`);
         }
       } else {
-        this.logger?.info('VISUAL', `DRY_RUN — files ready: PNG=${pngPath}${pdfPath ? ` PDF=${pdfPath}` : ''}`);
+        this.logger?.info(
+          'VISUAL',
+          `DRY_RUN — files ready: ${pngPaths.join(', ')}${pdfPath ? ` PDF=${pdfPath}` : ''}`
+        );
       }
 
-      return { visual: true, pngPath, pdfPath };
+      return { visual: true, pngPath: pngPaths[0], pngPaths, pdfPath, pages: pages.length };
     } catch (err) {
       if (err instanceof RenderError) {
         this.logger?.error('VISUAL', `Render failed — falling back to text: ${err.message}`);
@@ -139,21 +165,32 @@ export class VisualDeliver {
 
     try {
       const dims = { width: 1080, height: 1080 };
-      const html = renderAlertHtml(brief, dims);
-
-      const pngResult = await renderPng({ html, ...dims, scale: 2 });
-      const pngQA = validateImage({ buffer: pngResult.buffer, ...dims, html, brief });
+      // Content decides the canvas: a thin story renders shorter than 1080×1080
+      // instead of printing a band of empty background under it.
+      const pngResult = await renderFittedPng({
+        renderHtml: (d) => renderAlertHtml(brief, d),
+        dims,
+        scale: 2,
+        min: VISUAL_DEFAULTS.alertMinHeight,
+        max: dims.height,
+        pageStep: VISUAL_DEFAULTS.pageStep,
+      });
+      const { buffer, width, height, html } = pngResult;
+      const pngQA = validateImage({ buffer, width, height, html, brief });
       if (!pngQA.ok) {
         throw new RenderError(`Alert PNG QA failed: ${pngQA.problems.join('; ')}`);
       }
 
       const pngPath = saveVisual({
-        buffer: pngResult.buffer,
+        buffer,
         type: 'breaking',
         now,
         ext: 'png',
       });
-      this.logger?.info('VISUAL_ALERT', `Alert PNG saved: ${pngPath} (${pngResult.buffer.length} bytes, ${pngResult.ms}ms)`);
+      this.logger?.info(
+        'VISUAL_ALERT',
+        `Alert PNG saved: ${pngPath} ${width}×${height} (${buffer.length} bytes, ${pngResult.ms}ms)`
+      );
 
       if (!this.dryRun) {
         const caption = this.buildAlertCaption(brief);
@@ -174,24 +211,37 @@ export class VisualDeliver {
   }
 
   /**
-   * One-line caption saying what the image is — nothing else.
-   * e.g. "Pre-session summary • 05 October 2026 • 08:20 IST"
+   * Telegram caption (PART 34): title, date, and a two-line pointer at what the
+   * image contains. The report itself lives in the image — the caption never
+   * repeats it as text.
    */
-  buildCaption(brief, type) {
-    const what = type === 'closing' ? 'Market close summary' : 'Pre-session summary';
+  buildCaption(brief, type, { page = 1, pageCount = 1 } = {}) {
     const cal = brief.calendar ?? {};
-    const bits = [what];
+    const title = type === 'closing' ? 'Market Close' : 'Pre-Market Intelligence';
+    const blurb =
+      type === 'closing'
+        ? 'What drove the session, the day’s key developments and tomorrow’s watchlist — including sources.'
+        : 'Overnight global cues, yesterday’s session and today’s agenda — including sources.';
+
+    const dateBits = [];
+    if (cal.weekday) {
+      dateBits.push(
+        cal.weekday.charAt(0) + cal.weekday.slice(1).toLowerCase() // MONDAY -> Monday
+      );
+    }
     if (cal.dateLong) {
-      // calendar stores it shouty ("05 OCTOBER 2026") — title-case for a caption
-      bits.push(
+      dateBits.push(
         cal.dateLong
           .toLowerCase()
           .replace(/\b\w/g, (ch) => ch.toUpperCase())
       );
     }
-    if (cal.time) bits.push(cal.time);
-    if (cal.closed && cal.closedLabel) bits.push(cal.closedLabel);
-    return bits.join(' • ');
+    if (cal.time) dateBits.push(cal.time);
+
+    const lines = [title, dateBits.join(', '), blurb];
+    if (cal.closed && cal.closedLabel) lines.push(cal.closedLabel);
+    if (pageCount > 1) lines.push(page === 1 ? `Page 1 of ${pageCount}` : `Page ${page} of ${pageCount}`);
+    return lines.filter(Boolean).join('\n');
   }
 
   /** One-line caption for an alert image. e.g. "Breaking news • 09:42 IST" */

@@ -65,7 +65,14 @@ Rules — always follow:
   Use only facts present in the provided content. If a figure is not provided, omit it.
 - affected_sectors / affected_stocks: include an entry ONLY when the provided information
   clearly establishes the relationship; otherwise return an empty array.
-- summary: 2-3 factual sentences. facts: concrete facts drawn only from the provided content.
+- summary: the briefing prints this in full, word for word — there is no truncation
+  anywhere in the pipeline, so the summary must be complete on its own. 3-4 factual
+  sentences, 50-90 words (floor 40, ceiling 120) covering: what happened → the
+  concrete numbers → the consequence for Indian markets. Lead stories run at the top
+  of that range, supporting stories at the bottom. Never open with a preamble
+  ("In a recent development…") and never restate the headline — the headline is
+  printed directly above it.
+- facts: concrete facts drawn only from the provided content.
 - market_relevance: why this matters for Indian markets today — factual, no advice.
 - trader_takeaway: 1-2 sentences of WHAT TO WATCH (sectors, levels, confirmation points,
   upcoming data) as market intelligence — never a recommendation to buy/sell, never advice.

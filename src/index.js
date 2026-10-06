@@ -82,10 +82,13 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   const collected = await runProviders(briefingProviders, { logger, mode: kind, now }, logger);
   const snapshots = collected.items.filter((i) => i?.kind === 'snapshot').map((i) => i.snapshot ?? i);
 
-  // Lookback: pre-market covers the previous evening, closing covers today.
-  const hours = kind === 'premarket' ? 48 : 24;
+  // Lookback feeds the RELEVANCE window, not a freshness cut: pre-market needs
+  // last night AND the previous session AND anything still unresolved, so it
+  // reads wider than the intraday window (PART 10/25/30). selectStories() then
+  // decides what is actually still worth showing.
+  const hours = kind === 'premarket' ? 96 : 96;
   const since = new Date(now.getTime() - hours * 3600 * 1000).toISOString();
-  const events = store.listRecentEvents(since, 40);
+  const events = store.listRecentEvents(since, 150);
 
   let visualResult = { visual: false };
   let text = '';

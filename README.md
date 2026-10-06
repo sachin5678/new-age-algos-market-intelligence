@@ -262,44 +262,40 @@ npm run samples        # scripts/print-samples.mjs
 
 In addition to the text templates above, the pipeline can render **deterministic PNG images** for scheduled briefings and breaking alerts — no AI image generation, no paid SaaS, no external services. Pure HTML+CSS → headless Chromium (Puppeteer-core driving system Chrome) → exact pixel output.
 
-**Delivery format: PNG only.** Each image is sent with a single-line caption saying what it is (e.g. `Pre-session summary • 05 October 2026 • 08:30 IST`). The A4 PDF renderer still exists but is off by default (`VISUAL_PDF=true` to opt in) because several PDF viewers drop painted page backgrounds, so the dark theme renders inconsistently.
+**Delivery format: PNG only.** Each image is sent with a single-line caption saying what it is — for example `Pre-Market Intelligence | Monday, 05 October 2026, 08:30 IST | Overnight global cues, yesterday's session and today's agenda — including sources. | Page 1 of 7` (page 2 gets its own short caption when a report spills over). The A4 PDF renderer still exists but is off by default (`VISUAL_PDF=true` to opt in) because several PDF viewers drop painted page backgrounds, so the dark theme renders inconsistently.
 
 ### Templates
 
-| Template | Dimensions | Trigger | Caption (one line) |
-|---|---|---|---|
-| 🟦 **Pre-Market Intelligence** | 1080 × 1350 | `--mode premarket --briefing premarket --visual` | `Pre-session summary • <date> • <time> IST` |
-| ⬛ **Market Close** | 1080 × 1350 | `--mode closing --briefing closing --visual` | `Market close summary • <date> • <time> IST` |
-| 🟥 **Breaking Market Alert** | 1080 × 1080 | `VISUAL_ALERTS=true` on HIGH-importance events | `Breaking news • <time> IST` |
+Every briefing is **content-sized**. The renderer measures the packed content and gives each page the smallest height that actually contains it (rounded up to 20 px). `VISUAL_HEIGHT` is a **ceiling, never a fixed size** — so a light report renders shorter than 1600 px instead of printing an empty lower third, and a rich one flows to a second page instead of shrinking the type.
+
+| Template | Width | Height | Trigger | Caption (one line) |
+|---|---|---|---|---|
+| 🟦 **Pre-Market Intelligence** | 1080 | content, ≤ 1600 (page 1 ≥ 1080) | `--mode premarket --briefing premarket --visual` | `Pre-Market Intelligence \| <date> \| <blurb> \| Page 1 of N` |
+| ⬛ **Market Close** | 1080 | content, ≤ 1600 (page 1 ≥ 1080) | `--mode closing --briefing closing --visual` | `Market Close \| <date> \| <blurb> \| Page 1 of N` |
+| 🟥 **Breaking Market Alert** | 1080 | content, 760–1080 | `VISUAL_ALERTS=true` on HIGH-importance events | `Breaking news • <time> IST` |
 
 ### What’s in the images
 
-**Pre-Market (1080×1350):**
-- Header: brand, title, weekday + date + time IST (or `MARKET CLOSED • WEEK AHEAD` on holidays)
-- MARKET PULSE: NIFTY 50 / BANK NIFTY / SENSEX with ▲▼ direction
-- GLOBAL CUES: compact 3-col grid (max 3 cues: US equity, Asia, commodities/currency)
-- WHAT MATTERS TODAY: top 3 developments by importance (ranked, headline + 1-line summary + 1-line why-it-matters + source badge)
-- STOCKS / SECTORS TO WATCH: 2-col grid (max 2 each, data-supported reason)
-- KEY CATALYSTS / KEY RISKS: 2-col bullets (derived from present data only)
-- 🎯 NEW AGE ALGOS VIEW: 2–3 sentences (facts vs interpretation separated; omitted if no AI verdict)
-- Footer: tagline, generated timestamp, sources actually used, disclaimer
+**Pre-Market (multi-page):**
+- **Page 1 — executive:** header, MARKET PULSE, 🌅 OVERNIGHT / GLOBAL CUES, WHAT HAPPENED YESTERDAY
+- **Then, in order:** editorial cards, 🌙 OVERNIGHT DEVELOPMENTS, 👀 KEEP AN EYE ON TODAY, STOCKS TO WATCH, SECTORS TO WATCH, TODAY’S CATALYSTS, RISKS, 🎯 NEW AGE ALGOS VIEW, SOURCES
+- Sections with no reliable data are **omitted**, never rendered as empty decoration
+- A quiet overnight prints `No major new overnight developments identified in this window.` and the report still fills from yesterday’s session, the look-ahead agenda, global cues, stocks and sectors — it is never an empty page
 
-**Closing (1080×1350):**
-- Header + MARKET PULSE (same indices)
-- MARKET BREADTH + FII/DII (compact cards)
-- TOP GAINERS / TOP LOSERS (2-col, % change)
-- SECTOR PERFORMANCE (chips)
-- WHAT DROVE THE MARKET (1-line headline + summary)
-- KEY DEVELOPMENTS (top 2)
-- TOMORROW'S WATCH (chips)
-- CATALYSTS / RISKS + VIEW + footer
+**Market Close (multi-page):**
+- HEADER, MARKET PULSE, WHAT DROVE THE MARKET (editorial synthesis — never a copy of a headline), KEY DEVELOPMENTS, MARKET BREADTH, FII/DII, TOP GAINERS, TOP LOSERS, SECTOR MOVEMENT, TOMORROW’S WATCH, CATALYSTS, RISKS, NEW AGE ALGOS VIEW, SOURCES
 
-**Alert (1080×1080):**
-- Kicker: 🚨 MARKET ALERT + brand
-- Category chip + status badge (Confirmed/Reported/Awaiting/Unconfirmed) + impact badge
-- Headline + 1-line summary + 1-line why-it-matters
-- Affected stocks/sectors (chips)
-- Source link + timestamp + footer
+**Editorial news card** — the unit both reports are built from:
+- `01  SECTION LABEL  🏷️ WINDOW TAG` — numbered, window-classified
+- Full headline, wrapping to 1–3 lines — never clipped
+- Summary printed **word for word** (3–4 sentences; nothing in the pipeline truncates)
+- `WHY IT MATTERS` — 1–2 sentences
+- `SOURCE • TIME` — `LiveMint • 06:17 IST`, or `Moneycontrol • 01 Oct 2026` when the story is from another day
+- Impact + status badges; supporting outlets listed as `Also covered by: The Economic Times`
+
+**Alert (1080 × content, 760–1080):**
+- Sample banner, ⚡ BREAKING MARKET ALERT + category chip, full headline, why it matters, AFFECTED chips, IMPACT / CONFIRMATION, source + time, footer
+- The canvas is measured first and only grows to 1080 when the content needs it — a light alert never prints a band of empty background
 
 ### Optional A4 PDF (off by default)
 
@@ -312,12 +308,53 @@ In addition to the text templates above, the pipeline can render **deterministic
 
 Not used in production: PNG is the delivery format because PDF viewers disagree about painting dark page backgrounds.
 
+### Content selection (windows, relevance, quotas)
+
+The report is built around **three windows**, not around article freshness:
+
+| Window | Pre-market | Market close |
+|---|---|---|
+| 🌅 / 🌙 **Overnight** | previous close → 08:30 IST today | previous close → today’s open |
+| 👀 / 📊 **Previous session** | yesterday’s session (holiday-aware) | today’s session |
+| 📅 **Look ahead** | today’s catalysts and agenda | tomorrow’s watchlist |
+
+- **Windows are holiday-aware** — Monday 05 Oct 2026 resolves its “yesterday” to Thursday 01 Oct because Friday 02 Oct is Gandhi Jayanti, not to Friday.
+- **Event relevance beats article freshness.** A two-day-old policy thread with unresolved market implications scores above an hour-old trivia piece (`relevanceScore`).
+- Every story is classified `NEW / ONGOING / UPDATED / FOLLOW-UP / PREVIOUS SESSION — STILL RELEVANT` and carries the matching tag.
+- **Bucket quotas** guarantee each named window is actually present (`PREMARKET_QUOTA = {updated:1, overnight:3, session:2, earlier:1}`, `CLOSING_QUOTA = {updated:1, closing_session:3, overnight:2, earlier:1}`); unused slots are then backfilled in rank order up to the cap.
+- **Stories are never shortened to fit.** Raising or lowering the cap adds or removes whole stories; the summary always prints in full.
+- **One event, one card.** Reports of the same circular from different outlets are merged — headline similarity plus “same institution + same category” — with the rest kept as `supporting_sources`, and the visible numbering renumbered 01..N.
+- `WHAT DROVE THE MARKET` is an editorial synthesis of the session; `KEY DEVELOPMENTS` are the individual events. The two never repeat each other.
+
+### Pagination
+
+1. `buildPagePlan` slices the report into indivisible fragments (a fragment never shrinks).
+2. `measureFragments` measures every fragment in **one** Chromium pass.
+3. `packPages` packs them with lookahead: a `keepWithNext` heading is only placed if the block it introduces also fits, so no section title is ever stranded at the foot of a page.
+4. Each page gets the **smallest** height that contains it — `PAGE_PAD` reserved, footer reserved, 6 px of measurement safety, rounded up to 20 px.
+
+The page cap is **advisory**: content is never discarded to stay under it. `hardMaxPages` (10) aborts the render instead of shipping an absurd album, and the render failure falls back to the text briefing. The adaptive re-plan loop (up to 4 passes) drops the story cap rather than the story text when a plan overflows.
+
+**Page-count reality** (measured on the sample fixture): non-story sections alone need ≈5 pages, and each full-width editorial card costs one page. So a loaded day is 7–8 pages at `imageCap: 3`, while the PDF carries the full `developments_full` selection (cap 10). Content volume — not font size — sets the page count.
+
 ### Local commands
 
 ```bash
-npm run render:premarket   → artifacts/preview/premarket.png + .pdf
-npm run render:closing     → artifacts/preview/closing.png + .pdf
+npm run render:premarket   → artifacts/preview/premarket-p1..pN.png + .pdf
+npm run render:closing     → artifacts/preview/closing-p1..pN.png + .pdf
 npm run render:alert       → artifacts/preview/alert.png
+
+# Direct preview harness (sample/fixture data, no network, no store)
+node scripts/render-preview.mjs premarket --sample              # full pre-market
+node scripts/render-preview.mjs premarket --sample --quiet      # empty-overnight edge case
+node scripts/render-preview.mjs closing  --sample
+node scripts/render-preview.mjs alert    --sample
+node scripts/render-preview.mjs premarket --sample --json       # briefing JSON for inspection
+
+# Empty-band check: decodes the PNG and reports the longest run of pure
+# background rows (fails above 90 px)
+node scripts/gh-pngscan.mjs artifacts/preview/premarket-p1.png
+
 npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints JSON, no send
 ```
 
@@ -333,14 +370,21 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 
 ### Design guarantees
 
+- **Content decides the box** — page height is measured from content (rounded up to 20 px); `VISUAL_HEIGHT` is a ceiling, so there is no fixed empty space and no footer pinned over a void
+- **Zero truncation** — no `text-overflow: ellipsis`, no `-webkit-line-clamp`, no truncation helper in the component layer, and no `overflow:hidden` on editorial containers; headlines and summaries wrap and the page grows instead. Enforced by `test/visual-layout.test.js`
+- **Minimum type size** — nothing renders below `MIN_FONT` (12 logical px = 24 output px) anywhere in the theme
+- **Never an orphan heading** — a section title travels with its first block (`packPages` lookahead)
 - **Deterministic rendering** — same data → byte-identical PNG (verified by QA gate)
-- **Exact dimensions** — 1080×1350 / 1080×1080 (configurable via `VISUAL_WIDTH`/`VISUAL_HEIGHT`)
-- **QA gate before send** — file exists, non-empty, correct dimensions, no `undefined`/`null`/`[object Object]`/`NaN` in visible text, no duplicate stories, no fabricated URLs
+- **Correct dimensions** — every page is checked against the dimensions it was rendered at (page 1 ≥ 1080, all pages ≤ 1600, alert 760–1080)
+- **QA gate before send** — file exists, non-empty, correct dimensions, no `undefined`/`null`/`[object Object]`/`NaN` in visible text, no duplicate stories, no fabricated URLs, content does not overflow the canvas
+- **Empty-band scan** — `scripts/gh-pngscan.mjs` decodes the PNG and rejects any run of pure-background rows over 90 px
 - **Performance** — PNG < 10s, PDF < 15s (typical 2.5–3.5s)
 - **Font embedding** — Inter (400/500/600/700) as base64 woff2 in CSS; zero network at render time
 - **No AI visuals** — AI generates structured content only; the visual is pure code
-- **Missing data = N/A** — never hallucinated prices/percentages/sources/URLs/dates
+- **Missing data = N/A** — never hallucinated prices/percentages/sources/URLs/dates; a section with no reliable data is omitted rather than rendered empty
 - **Confirmation labels** from source hierarchy only: Confirmed / Reported / Awaiting official confirmation / Unconfirmed
+- **Analysis, not advice** — `NEW AGE ALGOS VIEW` is a synthesis of what is already on the page; never a BUY/SELL call and never personalised advice
+- **Test posts only reach the test group** — `-1004497477393`, never the main channel (see `## Telegram output`)
 
 ## Market → Short factory (`src/short/`)
 

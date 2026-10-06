@@ -17,7 +17,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import puppeteer from 'puppeteer-core';
 import { PROJECT_ROOT } from '../config.js';
-import { VISUAL_DEFAULTS } from './theme.js';
+import { VISUAL_DEFAULTS, baseCss } from './theme.js';
+import { packPages, packedContentHeight, renderPageDoc, planFragments, FRAG_GAP, PAGE_PAD } from './templates.js';
 
 /** Rendering problems are recoverable — the caller falls back to text. */
 export class RenderError extends Error {
@@ -100,39 +101,31 @@ async function launch(env = process.env) {
   });
 }
 
+/** Exposed so previews and tests can reuse the same browser process. */
+export { launch as launchBrowser };
+
 // ------------------------------------------------------------- render
 
 /**
- * HTML → PNG at exact output dimensions (§33: dimensions must be correct).
- * The template is authored at width/scale logical px with deviceScaleFactor.
- * Rejects if the page overflows the canvas (no clipped content).
+ * Lay one document out and screenshot it, inside an already-running browser.
+ * Shared by renderPng (single fixed page) and renderPlanPages (measured page).
+ *
+ * Rejects if content overflows the canvas — clipped content is never sent.
  */
-export async function renderPng({ html, width, height, scale = VISUAL_DEFAULTS.scale, timeoutMs = 9000 }) {
+async function shoot(browser, { html, width, height, scale = VISUAL_DEFAULTS.scale, timeoutMs = 9000 }) {
   const vw = Math.round(width / scale);
   const vh = Math.round(height / scale);
-  let browser = null;
-  const started = Date.now();
+  const page = await browser.newPage();
   try {
-    browser = await launch();
-    const page = await browser.newPage();
     await page.setViewport({ width: vw, height: vh, deviceScaleFactor: scale });
     await page.setContent(html, { waitUntil: 'networkidle0', timeout: timeoutMs });
     await page.evaluate(() => document.fonts?.ready);
 
-    const overflow = await page.evaluate((limit) => {
+    const overflow = await page.evaluate(() => {
       const el = document.querySelector('.poster');
       if (!el) return { missing: true };
-      const rects = [...el.querySelectorAll('*')].filter(
-        (n) => n.scrollHeight > n.clientHeight + 2 && getComputedStyle(n).overflowY !== 'visible'
-      );
-      return {
-        missing: false,
-        height: Math.max(el.scrollHeight, document.body.scrollHeight),
-        clipped: rects.length,
-        limit,
-      };
-    }, vh + 2);
-
+      return { missing: false, height: Math.max(el.scrollHeight, document.body.scrollHeight) };
+    });
     if (overflow.missing) throw new RenderError('Template has no .poster root element');
     if (overflow.height > vh + 2) {
       throw new RenderError(
@@ -140,14 +133,276 @@ export async function renderPng({ html, width, height, scale = VISUAL_DEFAULTS.s
       );
     }
 
-    const buf = await page.screenshot({
-      type: 'png',
-      clip: { x: 0, y: 0, width: vw, height: vh },
-    });
-    return { buffer: Buffer.from(buf), width, height, ms: Date.now() - started };
+    const buf = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: vw, height: vh } });
+    return Buffer.from(buf);
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/**
+ * HTML → PNG at exact output dimensions (§33: dimensions must be correct).
+ * The template is authored at width/scale logical px with deviceScaleFactor.
+ */
+export async function renderPng({ html, width, height, scale = VISUAL_DEFAULTS.scale, timeoutMs = 9000 }) {
+  const started = Date.now();
+  let browser = null;
+  try {
+    browser = await launch();
+    const buffer = await shoot(browser, { html, width, height, scale, timeoutMs });
+    return { buffer, width, height, ms: Date.now() - started };
   } catch (err) {
     if (err instanceof RenderError) throw err;
     throw new RenderError(`PNG rendering failed: ${err.message}`, err);
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+}
+
+// ---------------------------------------------------- measure + paginate
+
+/**
+ * Natural height (LOGICAL px) of a poster rendered with `exact: false`.
+ *
+ * The probe carries the same stylesheet and the same `.poster` box as the real
+ * render, so the number it returns is the height the final canvas should get.
+ */
+export async function measurePosterHeight({ browser, html, width, height, scale = VISUAL_DEFAULTS.scale, timeoutMs = 9000 }) {
+  const vw = Math.round(width / scale);
+  const vh = Math.round(height / scale);
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: vw, height: Math.max(vh, 200), deviceScaleFactor: 1 });
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: timeoutMs });
+    await page.evaluate(() => document.fonts?.ready);
+    return await page.evaluate(() => {
+      const p = document.querySelector('.poster');
+      return p ? Math.ceil(p.getBoundingClientRect().height) : 0;
+    });
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/**
+ * Render at the SMALLEST height that actually contains the content.
+ *
+ * A breaking alert on a quiet story has no business printing 1080×1080 with a
+ * third of it empty background. Measure once, round up to PAGE_STEP, clamp to
+ * `[min, max]`, then shoot for real — content decides the box.
+ *
+ * `renderHtml(dims)` must accept `{ height, exact }` and return the document.
+ * Returns `{ buffer, width, height, html, ms }`.
+ */
+export async function renderFittedPng({
+  renderHtml,
+  dims = {},
+  scale = VISUAL_DEFAULTS.scale,
+  min = 0,
+  max = Infinity,
+  pageStep = VISUAL_DEFAULTS.pageStep,
+  timeoutMs = 9000,
+}) {
+  const width = dims.width ?? VISUAL_DEFAULTS.width;
+  const ceiling = Math.min(max, dims.height ?? max);
+  const started = Date.now();
+  let browser = null;
+  try {
+    browser = await launch();
+
+    const probe = renderHtml({ ...dims, scale, height: min, exact: false });
+    const natural = await measurePosterHeight({ browser, html: probe, width, height: min, scale, timeoutMs });
+    if (!Number.isFinite(natural) || natural <= 0) {
+      throw new RenderError('Content did not measure — cannot size the canvas');
+    }
+
+    const naturalOut = Math.ceil(natural * scale);
+    const step = Math.max(1, pageStep);
+    const fitted = Math.ceil(naturalOut / step) * step;
+    const height = Math.max(min, Math.min(fitted, ceiling));
+
+    const html = renderHtml({ ...dims, scale, height, exact: true });
+    const buffer = await shoot(browser, { html, width, height, scale, timeoutMs });
+    return { buffer, width, height, html, ms: Date.now() - started };
+  } catch (err) {
+    if (err instanceof RenderError) throw err;
+    throw new RenderError(`PNG rendering failed: ${err.message}`, err);
+  } finally {
+    await browser?.close().catch(() => {});
+  }
+}
+
+/**
+ * Measure every fragment of a plan in ONE Chromium pass.
+ *
+ * Returns `{ [data-frag]: heightInLogicalPx }`. Layout is identical to a real
+ * page — same stylesheet, same `.poster` flex column, same padding — so the
+ * numbers are exactly what the renderer will later produce.
+ */
+export async function measureFragments({
+  browser,
+  fragments,
+  width,
+  scale = VISUAL_DEFAULTS.scale,
+  timeoutMs = 9000,
+}) {
+  const vw = Math.round(width / scale);
+  const html =
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<style>${baseCss({ vw, vh: 0 })}</style></head><body>` +
+    `<div class="poster" style="width:${vw}px;min-height:0;height:auto">` +
+    fragments.map((f) => f.html).join('') +
+    `</div></body></html>`;
+
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: vw, height: 400, deviceScaleFactor: 1 });
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: timeoutMs });
+    await page.evaluate(() => document.fonts?.ready);
+    return await page.evaluate(() => {
+      const out = {};
+      for (const n of document.querySelectorAll('.poster > .frag')) {
+        const key = n.dataset.frag;
+        if (key) out[key] = Math.ceil(n.getBoundingClientRect().height);
+      }
+      return out;
+    });
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
+/**
+ * Content-first page production (PART 2/17/20):
+ *
+ *   1. measure every fragment
+ *   2. pack them into pages no taller than VISUAL_HEIGHT
+ *   3. give each page the SMALLEST height that contains it (rounded up to
+ *      PAGE_STEP), floored at 1080 for page 1
+ *
+ * Result: no fixed empty space, no squeezed text, and a second page instead of
+ * a smaller font. Returns `[{ buffer, width, height, index, html }]`.
+ */
+export async function renderPlanPages({
+  plan,
+  dims = {},
+  logger = null,
+  timeoutMs = 9000,
+  replan = null,
+}) {
+  const width = dims.width ?? VISUAL_DEFAULTS.width;
+  const scale = dims.scale ?? VISUAL_DEFAULTS.scale;
+  const maxLogical = Math.round((dims.maxHeight ?? dims.height ?? VISUAL_DEFAULTS.height) / scale);
+  const minLogical = Math.round((dims.minPageHeight ?? VISUAL_DEFAULTS.minPageHeight) / scale);
+  const step = Math.max(1, Math.round((dims.pageStep ?? VISUAL_DEFAULTS.pageStep) / scale));
+  const maxPages = dims.maxPages ?? VISUAL_DEFAULTS.maxPages;
+  const hardMaxPages = dims.hardMaxPages ?? VISUAL_DEFAULTS.hardMaxPages;
+
+  let browser = null;
+  const started = Date.now();
+  try {
+    browser = await launch();
+
+    const measure = async (p) => {
+      const fragments = planFragments(p);
+      const h = await measureFragments({ browser, fragments, width, scale, timeoutMs });
+      const missing = fragments.filter((f) => !Number.isFinite(h[f.key])).map((f) => f.key);
+      if (missing.length) throw new RenderError(`Fragments did not measure: ${missing.join(', ')}`);
+      return h;
+    };
+
+    // Every page is PAGE_PAD + header + sections + footer + the gaps between
+    // them. Reserving the footer, the padding and a few px of measurement
+    // safety up front is what keeps a page from silently exceeding
+    // VISUAL_HEIGHT. All arithmetic below is in LOGICAL px and converted to
+    // output px exactly once, at the end.
+    const SAFETY = 6;
+    const maxContentFor = (h) =>
+      maxLogical - (PAGE_PAD + (h[plan.footer.key] ?? 0) + FRAG_GAP) - SAFETY;
+    const pack = (p, h) => {
+      const maxContent = maxContentFor(h);
+      if (maxContent <= step) {
+        throw new RenderError(
+          `VISUAL_HEIGHT=${maxLogical * scale}px leaves no room for content after the footer`
+        );
+      }
+      return packPages({
+        header1Key: p.header1.key,
+        headerNKey: p.headerN.key,
+        sections: p.sections,
+        heights: h,
+        maxContent,
+        maxPages,
+        hardMaxPages,
+      });
+    };
+
+    let currentPlan = plan;
+    let heights = await measure(currentPlan);
+    let pages = pack(currentPlan, heights);
+
+    // ---- self-sizing -------------------------------------------------------
+    // The poster adapts its card budget instead of producing an unbounded
+    // album: if the plan would overrun the target page count, ask the caller
+    // for a plan with fewer full-width cards and measure again. Story TEXT is
+    // never touched — we select fewer stories, we never shorten one.
+    let attempts = 0;
+    while (pages.length > maxPages && (currentPlan.cap ?? 1) > 1 && replan && attempts < 4) {
+      const nextCap = Math.max(1, Math.floor(((currentPlan.cap ?? 1) * maxPages) / pages.length));
+      if (nextCap >= (currentPlan.cap ?? 1)) break;
+      const nextPlan = replan(nextCap);
+      if (!nextPlan) break;
+      currentPlan = nextPlan;
+      heights = await measure(currentPlan);
+      pages = pack(currentPlan, heights);
+      attempts += 1;
+      logger?.info(
+        'VISUAL',
+        `page budget ${pages.length}>${maxPages} — re-planned with imageCap=${nextCap} → ${pages.length} pages`
+      );
+    }
+    if (pages.length > maxPages) {
+      logger?.warn?.(
+        'VISUAL',
+        `content needs ${pages.length} pages (target ${maxPages}); rendering them all rather than dropping sections`
+      );
+    }
+    // ------------------------------------------------------------------------
+
+    const out = [];
+    const pageCount = pages.length;
+    for (const [i, page] of pages.entries()) {
+      const content = packedContentHeight(page, heights);
+      let h = Math.ceil((content + SAFETY + 1) / step) * step;
+      if (i === 0) h = Math.max(h, minLogical);
+      h = Math.min(h, Math.max(maxLogical, content + SAFETY));
+      h = Math.max(h, content + SAFETY);
+
+      const html = renderPageDoc(currentPlan, page, {
+        height: h * scale,
+        width,
+        scale,
+        pageIndex: i + 1,
+        pageCount,
+      });
+      const buffer = await shoot(browser, { html, width, height: h * scale, scale, timeoutMs });
+      out.push({ buffer, width, height: h * scale, index: i, html, content });
+    }
+
+    logger?.debug?.(
+      'VISUAL',
+      `rendered ${out.length} page(s) at imageCap=${currentPlan.cap ?? 1}: ` +
+        `${out.map((p) => `${p.width}×${p.height}`).join(', ')} (${Date.now() - started}ms)`
+    );
+    return {
+      pages: out,
+      heights,
+      imageCap: currentPlan.cap ?? 1,
+      ms: Date.now() - started,
+    };
+  } catch (err) {
+    if (err instanceof RenderError) throw err;
+    throw new RenderError(`Page rendering failed: ${err.message}`, err);
   } finally {
     await browser?.close().catch(() => {});
   }
@@ -272,12 +527,16 @@ export function visualFileName({ type, date, now = null }) {
   return `${base}-${day}`;
 }
 
-/** Write buffer under artifacts/briefings (or an override dir). Returns paths. */
-export function saveVisual({ buffer, type, date = null, now = null, ext, dir = null }) {
+/**
+ * Write buffer under artifacts/briefings (or an override dir). Returns paths.
+ * Multi-page briefings append `-p2`, `-p3` so page 1 keeps the canonical name.
+ */
+export function saveVisual({ buffer, type, date = null, now = null, ext, dir = null, page = 1, pageCount = 1 }) {
   const outDir = dir ?? path.join(PROJECT_ROOT, VISUAL_DEFAULTS.dir);
   fs.mkdirSync(outDir, { recursive: true });
   const base = visualFileName({ type, date, now });
-  const file = path.join(outDir, `${base}.${ext}`);
+  const suffix = pageCount > 1 ? `-p${page}` : '';
+  const file = path.join(outDir, `${base}${suffix}.${ext}`);
   fs.writeFileSync(file, buffer);
   return file;
 }
