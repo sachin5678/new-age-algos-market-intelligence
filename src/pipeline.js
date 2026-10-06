@@ -184,7 +184,7 @@ export async function runPipeline({
 
   // One message per underlying story: keep only the best candidate per cluster.
   const seenClusters = new Set();
-  const selected = [];
+  const clustered = [];
   for (const d of approved) {
     const cid = d.event.cluster_id ?? d.event.event_id;
     if (seenClusters.has(cid)) {
@@ -194,8 +194,19 @@ export async function runPipeline({
       continue;
     }
     seenClusters.add(cid);
-    selected.push(d);
+    clustered.push(d);
   }
+
+  // ------------------------------------------------------------- RATE BUDGET
+  // shouldPublish() scores every candidate against ONE store snapshot and
+  // nothing is recorded until deliverEvents() has already run, so the rolling
+  // caps (daily / hourly / min_interval) all see the pre-run state and a
+  // backlog passes them simultaneously. Observed live: 12 events deferred by
+  // `outside_market_hours` were released together — 12 messages in 22s, which
+  // also spent the whole `dailyCap` so the channel then went silent all day.
+  // Re-apply the same caps down the already-priority-sorted list, simulating
+  // each keep as if it had been recorded at this run's timestamp.
+  const selected = applyPublishBudget(clustered, { store, settings, now, summary, scheduledBriefing });
 
   summary.decisions = decisions.map((d) => ({ event_id: d.event.event_id, publish: d.publish, reason: d.reason }));
   summary.counts.approved = selected.length;
@@ -226,4 +237,71 @@ export async function runPipeline({
     `done: collected=${summary.counts.collected} candidates=${candidates.length} published=${summary.counts.published}`
   );
   return summary;
+}
+
+/**
+ * applyPublishBudget(list, { store, settings, now, summary }) — the rolling-cap
+ * re-check that shouldPublish() cannot do on its own.
+ *
+ * shouldPublish() is called for every candidate against a single snapshot of
+ * the store; recordPublished() only runs later, inside deliverEvents(). So a
+ * backlog held back by a timing gate (e.g. `outside_market_hours` before the
+ * 09:15 open) is released all at once: dailyCap / maxAlertsPerHour /
+ * minIntervalMinutes all read the same stale counters and approve everything.
+ *
+ * Walks the already-priority-sorted selection and keeps only what fits, counting
+ * each keep as if it had just been recorded at this run's timestamp — which is
+ * exactly how recordPublished() stamps it. Overflow stays `deferred` (a timing
+ * rejection) so a later run retries it instead of dropping the story, holding
+ * the configured pacing: one message per min_interval, maxAlertsPerHour per
+ * hour, dailyCap per day.
+ *
+ * Mutates the decisions it skips (publish/reason) so PUBLISH_DECISION reports
+ * what was really sent. Returns the kept decisions, in order.
+ */
+export function applyPublishBudget(
+  list,
+  { store, settings = {}, now = new Date(), summary = null, scheduledBriefing = false } = {}) {
+  const publishCfg = { ...settings.publish, ...settings.scheduler };
+  const dailyCap = publishCfg.dailyCap ?? 12;
+  const hourlyCap = publishCfg.maxAlertsPerHour ?? publishCfg.hourlyCap ?? 3;
+  const minInterval = publishCfg.minIntervalMinutes ?? 5;
+  const cooldown = publishCfg.cooldownMinutes ?? 60;
+  const criticalAuto = publishCfg.criticalAutoPublish ?? false;
+
+  const nowMs = now.getTime();
+  let dailyUsed = store?.publishedCountSince?.(new Date(nowMs - 86_400_000).toISOString()) ?? 0;
+  let hourlyUsed = store?.publishedCountSince?.(new Date(nowMs - 3_600_000).toISOString()) ?? 0;
+  const lastIso = store?.lastPublishedAt?.() ?? null;
+  let lastMs = lastIso ? Date.parse(lastIso) : NaN;
+
+  const kept = [];
+  for (const d of list) {
+    // Same exemptions shouldPublish() grants, so this never contradicts it.
+    const priority = d.verdict?.publication_priority ?? null;
+    const critical = criticalAuto && priority === 'high';
+
+    let reason = null;
+    if (dailyUsed >= dailyCap) reason = 'daily_cap';
+    else if (hourlyUsed >= hourlyCap && !critical) reason = 'hourly_cap';
+    else if (Number.isFinite(lastMs)) {
+      const elapsedMin = (nowMs - lastMs) / 60_000;
+      if (elapsedMin < minInterval) reason = 'min_interval';
+      else if (!scheduledBriefing && priority !== 'high' && elapsedMin < cooldown) reason = 'cooldown';
+    }
+
+    if (reason) {
+      d.publish = false;
+      d.reason = reason;
+      if (summary) summary.rejectReasons[reason] = (summary.rejectReasons[reason] ?? 0) + 1;
+      store?.updateEvent?.(d.event?.event_id, { status: 'deferred' });
+      continue;
+    }
+
+    kept.push(d);
+    dailyUsed += 1;
+    hourlyUsed += 1;
+    lastMs = nowMs; // one run's sends all carry the same timestamp
+  }
+  return kept;
 }
