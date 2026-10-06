@@ -49,6 +49,7 @@ jobs:
       # still goes green (YouTube remains the only fatal platform).
       IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
       IG_USER_ID: ${{ secrets.IG_USER_ID }}
+      IG_TOKEN_CREATED: ${{ secrets.IG_TOKEN_CREATED }}
       NODE_ENV: production
 
     steps:

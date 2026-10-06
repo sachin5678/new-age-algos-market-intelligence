@@ -518,35 +518,44 @@ Guarantees:
 ### Auto-upload to Instagram Reels (`--upload`, free Graph API)
 
 `src/instagram.js` cross-posts the **same MP4** as a Reel through the official
-**Instagram Content Publishing API** (free; quota 100 API-published posts per
-rolling 24 h, the schedule needs two). No third-party tools, no unofficial
-scrapers — the channel account can never be shadow-banned for automation.
+**Instagram Content Publishing API** — the *Instagram API with Instagram
+Login* variant (free; publish quota comfortably covers the two posts/day we
+need). **No Facebook Page is created anywhere**: your personal Facebook
+account only signs into the developer console and never becomes public. No
+third-party tools, no unofficial scrapers — the account can never be
+shadow-banned for automation.
 
-One-time Meta setup (~10 minutes, all free, no app review for our own account):
+One-time Meta setup (~10 minutes, all free, no app review for our own
+account, **no Facebook Page — ever**):
 
 1. Instagram → Settings → Account → **Switch to professional account →
    Creator**; the account must be **public** (private accounts cannot
    publish via API)
-2. Create a **Facebook Page** for the brand from your personal Facebook
-   account (facebook.com → Menu/Pages → **Create new Page**, ~1 min) and
-   link it to Instagram — either IG → **Edit profile → Page → Connect**
-   or FB Page → **Settings → Permissions → Linked accounts → Instagram**
-   (Accounts Center "Sharing across profiles" alone is NOT the link the
-   API needs — it must be the Page link)
-3. developers.facebook.com → *Get Started* → **Apps → Create App → Business**
-   → add the **Instagram Graph API** product
-4. **Graph API Explorer** → select the app → add permissions
-   `instagram_basic`, `instagram_content_publish`, `pages_read_engagement`
-   → **Generate Access Token** → copy it (plus *App ID* / *App Secret* from
-   app Settings → Basic)
-5. `node scripts/instagram-auth.mjs <token> <app-id> <app-secret>` —
-   exchanges it for a long-lived **page token**, discovers the Page +
-   Instagram ids, writes `~/.secrets/instagram-auth.json` (gitignored)
-6. Add repo secrets `IG_ACCESS_TOKEN` + `IG_USER_ID` — scheduled runs then
-   cross-post every short automatically (local runs read the auth file)
+2. developers.facebook.com → *Get Started* (your personal login — it stays
+   private) → **Apps → Create App → Business** → add the **Instagram**
+   product (*Instagram API with Instagram Login*)
+3. **Graph API Explorer** → select the app → add permissions
+   `instagram_business_basic`, `instagram_business_content_publish` →
+   **Generate Access Token** → copy the token (grab the *App Secret* from
+   app Settings → Basic if the explorer hands out a short-lived token)
+4. `node scripts/instagram-auth.mjs <token> [--app-secret <sec>]` —
+   validates the token against graph.instagram.com, converts it to the
+   60-day variant, writes `~/.secrets/instagram-auth.json` (gitignored)
+5. Add repo secrets `IG_ACCESS_TOKEN`, `IG_USER_ID`, `IG_TOKEN_CREATED`
+   (all three printed by the script) — scheduled runs then cross-post
+   every short automatically (local runs read the auth file)
 
 Notes:
 
+- **60-day tokens renew themselves**: Instagram Login tokens live 60 days;
+  `publishReel` auto-refreshes once the token is ≥45 days old and parks
+  the new token in the existing `state/youtube-uploads.json` registry
+  (`igAuth` field) — the same file the workflow cache already persists, so
+  there is **no new cache file and no cache-version bump** (a new file
+  would cold-start the cache chain and risk re-uploads). If refresh ever
+  fails (cold cache + a secret older than 60 days), re-run setup step 4
+  and update the secrets — until then each run logs `token refresh failed`
+  next to the reel line.
 - **Hosting**: Meta fetches the video from a public URL, so each run pushes
   the MP4 to a free temp host first (`tmpfiles.org` 60 min → `uguu.se` 24 h
   → `catbox.moe` last resort) — it only needs to survive the seconds Meta

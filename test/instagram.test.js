@@ -55,12 +55,31 @@ const noNetwork = async () => {
 
 // ------------------------------------------------------------------ helpers
 
-test('loadIgCredentials: env first, then local auth file, else null', (t) => {
+test('loadIgCredentials: newest createdAt wins — registry beats env, file beats older env', (t) => {
   const dir = tmp(t);
-  assert.equal(loadIgCredentials({ env: {}, secretsDir: dir }), null);
-  assert.deepEqual(loadIgCredentials({ env: CREDS, secretsDir: dir }), { accessToken: 'tok', userId: '123' });
-  fs.writeFileSync(path.join(dir, 'instagram-auth.json'), JSON.stringify({ accessToken: 'filetok', userId: '777' }));
-  assert.deepEqual(loadIgCredentials({ env: {}, secretsDir: dir }), { accessToken: 'filetok', userId: '777' });
+  const registryFile = path.join(dir, 'reg.json');
+  assert.equal(loadIgCredentials({ env: {}, secretsDir: dir, registryFile }), null);
+
+  const fromEnv = loadIgCredentials({ env: CREDS, secretsDir: dir, registryFile });
+  assert.equal(fromEnv.accessToken, 'tok');
+  assert.equal(fromEnv.userId, '123');
+  assert.equal(fromEnv.src, 'env');
+
+  const envWithDate = { ...CREDS, IG_TOKEN_CREATED: '2026-09-01T00:00:00.000Z' };
+  fs.writeFileSync(
+    path.join(dir, 'instagram-auth.json'),
+    JSON.stringify({ accessToken: 'filetok', userId: '777', createdAt: '2026-10-01T00:00:00.000Z' })
+  );
+  assert.equal(loadIgCredentials({ env: envWithDate, secretsDir: dir }).accessToken, 'filetok');
+
+  fs.writeFileSync(
+    registryFile,
+    JSON.stringify({ videos: {}, igAuth: { accessToken: 'regtok', userId: '555', createdAt: '2026-10-06T00:00:00.000Z' } })
+  );
+  const fromReg = loadIgCredentials({ env: envWithDate, secretsDir: dir, registryFile });
+  assert.equal(fromReg.accessToken, 'regtok');
+  assert.equal(fromReg.userId, '555');
+  assert.equal(fromReg.src, 'registry');
 });
 
 test('igKeyFor prefixes the YouTube key so both registries coexist', () => {
@@ -134,6 +153,7 @@ test('publishReel: happy path publishes and marks insta: key; second call dedups
   });
   assert.equal(res.status, 'published', res.message);
   assert.equal(res.permalink, 'https://www.instagram.com/reel/ABC/');
+  assert.ok(!/token refresh/.test(res.message), 'dateless token → no refresh attempted');
 
   const reg = loadRegistry(registryFile);
   assert.ok(reg.videos['insta:event:evt_a'], 'insta key recorded');
@@ -239,4 +259,80 @@ test('hostVideo: falls back to uguu.se, then catbox.moe; errors only when all fa
     hostVideo(Buffer.from('x'), 'short.mp4', async () => ({ ok: false, status: 500, text: async () => 'down' })),
     /tmpfiles\.org.*uguu\.se.*catbox\.moe/s
   );
+});
+
+// ------------------------------------------------------------ token lifecycle
+
+const OLD = new Date(Date.now() - 50 * 24 * 60 * 60 * 1000).toISOString(); // day 50 of the 60-day life
+
+/** Capture which access_token the container-create POST carried. */
+const captureContainer = (sink) => ({
+  match: '123/media',
+  res: async (opts) => {
+    sink.push(opts.body.get('access_token'));
+    return ok({ id: 'C1' });
+  },
+});
+
+/** Full happy path around a custom refresh route (media_publish before 123/media — URL prefix!). */
+const baseRoutes = (sink, refreshRoute) => [
+  refreshRoute,
+  { match: 'media_publish', res: async () => ok({ id: 'M9' }) },
+  captureContainer(sink),
+  { match: 'status_code', res: async () => ok({ status_code: 'FINISHED' }) },
+  { match: 'permalink', res: async () => ok({ permalink: 'https://www.instagram.com/reel/ABC/' }) },
+];
+
+test('publishReel: token ≥45 days old auto-refreshes; new token used and parked in registry.igAuth', async (t) => {
+  const dir = tmp(t);
+  const registryFile = path.join(dir, 'reg.json');
+  const tokens = [];
+  const routes = baseRoutes(tokens, {
+    match: 'refresh_access_token',
+    res: async () => ok({ access_token: 'refreshedtok', expires_in: 5_184_000 }),
+  });
+
+  const res = await publishReel({
+    summary: summaryFor(path.join(dir, 'run')),
+    registryFile,
+    env: { ...CREDS, IG_TOKEN_CREATED: OLD },
+    secretsDir: path.join(dir, 'secrets'), // keep persistence inside the test dir
+    fetchImpl: router(routes),
+    hostVideoImpl: async () => ({ url: 'https://x/v.mp4', host: 'h' }),
+  });
+  assert.equal(res.status, 'published', res.message);
+  assert.equal(res.message.includes('token refresh failed'), false, 'no warning on success');
+  assert.equal(tokens[0], 'refreshedtok', 'container created with the refreshed token');
+  const reg = loadRegistry(registryFile);
+  assert.equal(reg.igAuth.accessToken, 'refreshedtok');
+  assert.equal(reg.igAuth.userId, '123');
+  assert.ok(Date.parse(reg.igAuth.createdAt) > Date.now() - 60_000, 'fresh createdAt parked');
+  assert.ok(reg.videos['insta:event:evt_a'], 'publish key recorded alongside igAuth');
+});
+
+test('publishReel: failed refresh warns in the message but still publishes with the old token', async (t) => {
+  const dir = tmp(t);
+  const registryFile = path.join(dir, 'reg.json');
+  const tokens = [];
+  const routes = baseRoutes(tokens, {
+    match: 'refresh_access_token',
+    res: async () => ({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: { message: 'Invalid OAuth access token' } }),
+    }),
+  });
+
+  const res = await publishReel({
+    summary: summaryFor(path.join(dir, 'run')),
+    registryFile,
+    env: { ...CREDS, IG_TOKEN_CREATED: OLD },
+    secretsDir: path.join(dir, 'secrets'), // keep persistence inside the test dir
+    fetchImpl: router(routes),
+    hostVideoImpl: async () => ({ url: 'https://x/v.mp4', host: 'h' }),
+  });
+  assert.equal(res.status, 'published', res.message);
+  assert.match(res.message, /token refresh failed.*Invalid OAuth access token/);
+  assert.equal(tokens[0], 'tok', 'old token used when refresh fails');
+  assert.equal(loadRegistry(registryFile).igAuth, undefined, 'nothing parked on failure');
 });

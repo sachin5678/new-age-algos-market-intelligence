@@ -6,7 +6,8 @@
  * channel account. Quota is 100 API-published posts / rolling 24 h — the
  * schedule needs two (story + recap), so headroom is ~50x.
  *
- * Endpoints (graph.facebook.com):
+ * Endpoints (graph.instagram.com — Instagram API with Instagram Login,
+ * so NO Facebook Page exists anywhere in this integration):
  *   POST /<ig-user>/media                          create a REELS container
  *   GET  /<container>?fields=status_code           wait for FINISHED
  *   POST /<ig-user>/media_publish                  publish the container
@@ -35,7 +36,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { isUploaded, loadRegistry, saveRegistry, uploadKeyFor } from './youtube.js';
 
-const GRAPH = 'https://graph.facebook.com/v26.0';
+const GRAPH = 'https://graph.instagram.com/v26.0';
+const REFRESH_AFTER_MS = 45 * 24 * 60 * 60 * 1000; // refresh at day 45 of the 60-day token life
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 export const CAPTION_MAX = 2_200; // Instagram hard limit
@@ -43,25 +45,43 @@ export const CAPTION_MAX = 2_200; // Instagram hard limit
 export const defaultIgSecretsDir = () => process.env.SECRETS_DIR || path.join(os.homedir(), '.secrets');
 
 /**
- * {accessToken, userId}: env first (CI secrets), then the local
- * ~/.secrets/instagram-auth.json written by scripts/instagram-auth.mjs —
- * the same env-then-file pattern as YouTube's loadCredentials().
+ * Credentials for the Instagram Login API (no Page involved anywhere).
+ * Candidates — newest `createdAt` wins, so a token refreshed on an earlier
+ * run (registry `igAuth`, rides the existing workflow cache) always beats
+ * the original env secret:
+ *   1. registry.igAuth — written by ensureFreshToken() after a refresh
+ *   2. env             — IG_ACCESS_TOKEN / IG_USER_ID / IG_TOKEN_CREATED
+ *   3. local auth file — ~/.secrets/instagram-auth.json (auth script)
  */
-export function loadIgCredentials({ env = process.env, secretsDir = defaultIgSecretsDir() } = {}) {
-  const fromEnv = {
-    accessToken: String(env.IG_ACCESS_TOKEN ?? '').trim(),
-    userId: String(env.IG_USER_ID ?? '').trim(),
+export function loadIgCredentials({ env = process.env, secretsDir = defaultIgSecretsDir(), registryFile } = {}) {
+  const candidates = [];
+  const push = (src, accessToken, userId, createdAt) => {
+    const tok = String(accessToken ?? '').trim();
+    const uid = String(userId ?? '').trim();
+    if (!tok || !uid) return;
+    const t = Date.parse(createdAt ?? '');
+    candidates.push({
+      accessToken: tok,
+      userId: uid,
+      createdAt: createdAt ?? null,
+      src,
+      t: Number.isFinite(t) ? t : 0,
+    });
   };
-  if (fromEnv.accessToken && fromEnv.userId) return fromEnv;
+  if (registryFile) {
+    const ig = loadRegistry(registryFile).igAuth;
+    push('registry', ig?.accessToken, ig?.userId, ig?.createdAt);
+  }
+  push('env', env.IG_ACCESS_TOKEN, env.IG_USER_ID, env.IG_TOKEN_CREATED);
   try {
     const file = JSON.parse(fs.readFileSync(path.join(secretsDir, 'instagram-auth.json'), 'utf8'));
-    const accessToken = String(file?.accessToken ?? '').trim();
-    const userId = String(file?.userId ?? '').trim();
-    if (accessToken && userId) return { accessToken, userId };
+    push('file', file?.accessToken, file?.userId, file?.createdAt);
   } catch {
     /* no local auth file yet — treated as unconfigured */
   }
-  return null;
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.t - a.t); // unknown createdAt (t = 0) sorts last
+  return candidates[0];
 }
 
 /** Dedup key: same event/date as YouTube, prefixed so both registries coexist. */
@@ -159,6 +179,61 @@ async function graphJson(res, what) {
   return body;
 }
 
+/** Refresh the 60-day token → a new 60-day token (throws on failure). */
+export async function refreshToken({ accessToken, fetchImpl = fetch }) {
+  const res = await fetchImpl(
+    `${GRAPH}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(accessToken)}`
+  );
+  const json = await graphJson(res, 'token refresh');
+  if (!json?.access_token) throw new Error('token refresh: no access_token returned');
+  return { accessToken: json.access_token, expiresIn: json.expires_in };
+}
+
+/**
+ * 60-day token lifecycle: once the active token is ≥45 days old, refresh it
+ * and persist the new one to (a) the registry's `igAuth` field — same
+ * youtube-uploads.json file the workflow cache already saves, so the cache
+ * version never changes — and (b) the local auth file for local runs.
+ * Never throws: a failed refresh keeps the current token (valid until day 60
+ * and refreshable again on the next run).
+ */
+export async function ensureFreshToken({ creds, registryFile, secretsDir, fetchImpl = fetch }) {
+  const age = Date.now() - Date.parse(creds.createdAt ?? '');
+  if (!Number.isFinite(age) || age < REFRESH_AFTER_MS) {
+    return { creds, refreshed: false, warning: null };
+  }
+  try {
+    const { accessToken } = await refreshToken({ accessToken: creds.accessToken, fetchImpl });
+    const createdAt = new Date().toISOString();
+    const next = { ...creds, accessToken, createdAt, src: 'registry' };
+    try {
+      const registry = loadRegistry(registryFile);
+      registry.igAuth = { accessToken, userId: creds.userId, createdAt };
+      saveRegistry(registryFile, registry);
+    } catch (e) {
+      console.error(`instagram: could not park the refreshed token in the registry: ${e.message}`);
+    }
+    try {
+      let file = {};
+      try {
+        file = JSON.parse(fs.readFileSync(path.join(secretsDir, 'instagram-auth.json'), 'utf8'));
+      } catch {
+        /* new file */
+      }
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(secretsDir, 'instagram-auth.json'),
+        `${JSON.stringify({ ...file, accessToken, userId: creds.userId, createdAt }, null, 2)}\n`
+      );
+    } catch {
+      /* local persist is best-effort too */
+    }
+    return { creds: next, refreshed: true, warning: null };
+  } catch (err) {
+    return { creds, refreshed: false, warning: String(err?.message ?? err) };
+  }
+}
+
 /** POST /<ig-user>/media — returns the container id. */
 export async function createReelContainer({ creds, caption, videoUrl, fetchImpl = fetch }) {
   const res = await fetchImpl(`${GRAPH}/${creds.userId}/media`, {
@@ -240,13 +315,19 @@ export async function publishReel({
     return { status: 'already', permalink: prev.permalink, message: 'already published to Instagram' };
   }
 
-  const creds = loadIgCredentials({ env, secretsDir });
-  if (!creds) {
+  const base = loadIgCredentials({ env, secretsDir, registryFile });
+  if (!base) {
     return {
       status: 'no-auth',
-      message: 'Instagram not configured — set IG_ACCESS_TOKEN + IG_USER_ID secrets (one-time Meta token exchange)',
+      message:
+        'Instagram not configured — set IG_ACCESS_TOKEN / IG_USER_ID / IG_TOKEN_CREATED secrets ' +
+        '(one-time: node scripts/instagram-auth.mjs <token>)',
     };
   }
+  // 60-day token lifecycle: auto-refresh from day 45 (see ensureFreshToken).
+  const fresh = await ensureFreshToken({ creds: base, registryFile, secretsDir, fetchImpl });
+  const creds = fresh.creds;
+  const refreshNote = fresh.warning ? ` (${fresh.warning})` : '';
 
   try {
     if (!summary.video || !fs.existsSync(summary.video)) {
@@ -266,8 +347,8 @@ export async function publishReel({
       host: hosted.host,
       publishedAt: new Date().toISOString(),
     });
-    return { status: 'published', permalink, message: `reel published (via ${hosted.host})` };
+    return { status: 'published', permalink, message: `reel published (via ${hosted.host})${refreshNote}` };
   } catch (err) {
-    return { status: 'error', message: String(err?.message ?? err) };
+    return { status: 'error', message: `${String(err?.message ?? err)}${refreshNote}` };
   }
 }
