@@ -33,6 +33,7 @@ function richSnapshots() {
     { name: 'Declines', value: 950 },
     { name: 'NIFTY IT', value: 43120.5, pct_change: 1.24 },
     { name: 'NIFTY PSU BANK', value: 6820.3, pct_change: 0.86 },
+    { name: 'SENSEX', value: 72072.14, pct_change: 1.61 },
     { name: 'TRENT', value: 6120.0, pct_change: 5.2 },
     { name: 'FII', value: -1240.5 },
     { name: 'DII', value: 890.2 },
@@ -198,7 +199,25 @@ test('an index is never listed as a stock mover', () => {
   const close = formatClosingDigest(richClose(), { now: NOW });
   const movers = lines(close).find((l) => l.includes('MOVERS')) ?? '';
   assert.ok(!/bank nifty/i.test(movers), `Bank Nifty leaked into MOVERS: ${movers}`);
+  assert.ok(!/sensex/i.test(movers), `SENSEX leaked into MOVERS: ${movers}`);
   assert.ok(movers.includes('TRENT +5.20%'), `real mover missing: ${movers}`);
+});
+
+test('SENSEX sits on the index line alongside NIFTY and BANK NIFTY', () => {
+  // Live bug: indexRows() only picked NIFTY 50 + Bank Nifty, so the BSE
+  // benchmark was neither on 📈 nor filtered out of 🔥 MOVERS.
+  const ctx = buildClosingContext({ snapshots: richSnapshots(), events: events(), now: NOW });
+  const names = (ctx.indices ?? []).map((i) => i.name);
+  assert.equal(names.length, 3, `expected the three Indian indices, got ${names.join(', ')}`);
+  assert.ok(names.some((n) => /sensex/i.test(n)), 'SENSEX missing from ctx.indices');
+  assert.ok(
+    (ctx.movers ?? []).every((m) => !/sensex/i.test(m)),
+    `SENSEX still in ctx.movers: ${(ctx.movers ?? []).join(', ')}`
+  );
+
+  const pre = formatPreMarketDigest(richPre(), { now: NOW });
+  const indexLine = lines(pre).find((l) => l.startsWith('📈')) ?? '';
+  assert.ok(/sensex/i.test(indexLine), `SENSEX not on the index line: ${indexLine}`);
 });
 
 test('a full closing context sheds the least useful line, not the view', () => {

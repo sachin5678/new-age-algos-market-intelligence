@@ -164,9 +164,21 @@ export function buildPreMarketContext({ snapshots = [], events = [], now = new D
   return ctx;
 }
 
-/** Structured index rows ({name, value, pct_change}) for the dashboard blocks. */
+/**
+ * Structured index rows ({name, value, pct_change}) for the dashboard blocks.
+ *
+ * The three Indian indices a reader checks first: NIFTY 50, BANK NIFTY, SENSEX.
+ * SENSEX used to be missing here while also missing from the mover filter below,
+ * so BSE's benchmark turned up under KEY STOCK MOVERS instead of on the index
+ * line — the same way "Bank Nifty" leaked, because it does not start with
+ * "nifty".
+ */
 function indexRows(snaps) {
-  return [findSnap(snaps, /^nifty(\s*50)?$/i), findSnap(snaps, /bank\s*nifty|nifty\s*bank/i)]
+  return [
+    findSnap(snaps, /^nifty(\s*50)?$/i),
+    findSnap(snaps, /bank\s*nifty|nifty\s*bank/i),
+    findSnap(snaps, /sensex/i),
+  ]
     .filter((s) => s && typeof s.value === 'number')
     .map((s) => ({
       name: s.name,
@@ -206,11 +218,13 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
   }
 
   // Stock movers: named non-index snapshots with pct_change (from market snapshots).
-  // "Bank Nifty" does NOT start with "nifty", so a prefix match alone let the
-  // bank index through and printed it under KEY STOCK MOVERS.
+  // Prefix matching alone is not enough — "Bank Nifty" does not start with
+  // "nifty" and "BSE SENSEX" does not start with "sensex", so both slipped
+  // through and were printed under KEY STOCK MOVERS. Match them as whole words
+  // too. Kept in step with src/visual/data.js moversFromSnapshots().
   const indexLike = (name) =>
     /^(nifty|s&p|dow|nasdaq|nikkei|hang|shanghai|usd|brent|crude|gold|fii|dii|advance|decline|gift)/i.test(name) ||
-    /(^|\s)nifty(\s|$)/i.test(name);
+    /(^|\s)(nifty|sensex|bse)(\s|$)/i.test(name);
   const movers = snaps
     .filter((s) => !indexLike(String(s.name)) && typeof s.pct_change === 'number')
     .sort((a, b) => Math.abs(b.pct_change) - Math.abs(a.pct_change))
