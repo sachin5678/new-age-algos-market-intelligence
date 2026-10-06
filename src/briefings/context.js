@@ -206,9 +206,13 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
   }
 
   // Stock movers: named non-index snapshots with pct_change (from market snapshots).
-  const indexLike = /^(nifty|s&p|dow|nasdaq|nikkei|hang|shanghai|usd|brent|crude|gold|fii|dii|advance|decline|gift)/i;
+  // "Bank Nifty" does NOT start with "nifty", so a prefix match alone let the
+  // bank index through and printed it under KEY STOCK MOVERS.
+  const indexLike = (name) =>
+    /^(nifty|s&p|dow|nasdaq|nikkei|hang|shanghai|usd|brent|crude|gold|fii|dii|advance|decline|gift)/i.test(name) ||
+    /(^|\s)nifty(\s|$)/i.test(name);
   const movers = snaps
-    .filter((s) => !indexLike.test(String(s.name)) && typeof s.pct_change === 'number')
+    .filter((s) => !indexLike(String(s.name)) && typeof s.pct_change === 'number')
     .sort((a, b) => Math.abs(b.pct_change) - Math.abs(a.pct_change))
     .map((s) => `${s.name}: ${fmtSnap(s)}`);
   if (movers.length) ctx.movers = movers;

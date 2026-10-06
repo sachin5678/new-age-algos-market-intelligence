@@ -62,12 +62,14 @@ jobs:
           VISUAL_PDF: 'false'
         run: |
           JOB_TYPE=${{ github.event.action }}
+          # Text-only delivery: one digest message per briefing, one text alert
+          # per event. The image path sent one message per page (5–7 per brief).
           if [ "$JOB_TYPE" = "market-check" ]; then
-            VISUAL_ALERTS=true node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
+            VISUAL_ALERTS=false node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "premarket" ]; then
-            VISUAL_BRIEFING=true node src/index.js --mode premarket --briefing premarket --visual ${{ env.NO_AI_FLAG }}
+            VISUAL_BRIEFING=false node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "closing" ]; then
-            VISUAL_BRIEFING=true node src/index.js --mode closing --briefing closing --visual ${{ env.NO_AI_FLAG }}
+            VISUAL_BRIEFING=false node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "health-check" ]; then
             node src/index.js --job-type health-check
           elif [ "$JOB_TYPE" = "market-news" ]; then

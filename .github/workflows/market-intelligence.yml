@@ -100,17 +100,20 @@ jobs:
         if: ${{ github.event.inputs.job_type == 'health-check' }}
         run: node src/index.js --job-type health-check
 
+      # Briefings are sent as ONE 10–12 line text digest (briefing-digest.js).
+      # --visual / VISUAL_* must stay off: the image path delivered one message
+      # PER PAGE, which readers experienced as 5–7 spam posts twice a day.
       - name: Run pre-market briefing
         if: ${{ github.event.inputs.job_type == 'premarket' }}
         env:
-          VISUAL_BRIEFING: 'true'
+          VISUAL_BRIEFING: 'false'
           VISUAL_PDF: 'false'
-        run: node src/index.js --mode premarket --briefing premarket --visual ${{ env.NO_AI_FLAG }}
+        run: node src/index.js --mode premarket --briefing premarket ${{ env.NO_AI_FLAG }}
 
       - name: Run market check
         if: ${{ github.event.inputs.job_type == 'market-check' }}
         env:
-          VISUAL_ALERTS: 'true'
+          VISUAL_ALERTS: 'false'
         run: node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
 
       - name: Run market news
@@ -120,9 +123,9 @@ jobs:
       - name: Run closing briefing
         if: ${{ github.event.inputs.job_type == 'closing' }}
         env:
-          VISUAL_BRIEFING: 'true'
+          VISUAL_BRIEFING: 'false'
           VISUAL_PDF: 'false'
-        run: node src/index.js --mode closing --briefing closing --visual ${{ env.NO_AI_FLAG }}
+        run: node src/index.js --mode closing --briefing closing ${{ env.NO_AI_FLAG }}
 
       - name: Save state to cache
         if: always()

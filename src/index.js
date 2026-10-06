@@ -15,7 +15,7 @@ import { runPipeline } from './pipeline.js';
 import { createPoller } from './scheduler/index.js';
 import { createSourceRegistry } from './normalize/sources.js';
 import { buildPreMarketContext, buildClosingContext } from './briefings/context.js';
-import { formatPreMarket, formatClosing } from './telegram/briefings.js';
+import { formatPreMarketDigest, formatClosingDigest } from './telegram/briefing-digest.js';
 import { chunkMessage } from './telegram/format.js';
 import { labelChunks } from './telegram/theme.js';
 import { VisualDeliver } from './visual/deliver.js';
@@ -112,7 +112,9 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
     const ctx = kind === 'premarket'
       ? buildPreMarketContext({ snapshots, events, now })
       : buildClosingContext({ snapshots, events, now });
-    text = kind === 'premarket' ? formatPreMarket(ctx, { now }) : formatClosing(ctx, { now });
+    // Single 10–12 line digest, not the 40–70 line long-form report: the long
+    // form only ever reached readers as 5–7 separate page images.
+    text = kind === 'premarket' ? formatPreMarketDigest(ctx, { now }) : formatClosingDigest(ctx, { now });
 
     try {
       for (const chunk of labelChunks(chunkMessage(text, 4096))) {
