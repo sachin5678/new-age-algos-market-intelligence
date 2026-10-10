@@ -20,7 +20,7 @@ const MIN_BYTES = 150 * 1024; // 45s of 1080x1920 h264 is several MB — below t
  */
 export function validateShort(
   { file, probe },
-  { minSec = 18, maxSec = 75, width = 1080, height = 1920 } = {}
+  { minSec = 15, maxSec = 75, width = 1080, height = 1920 } = {}
 ) {
   const problems = [];
 
