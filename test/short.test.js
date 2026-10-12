@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { buildShort } from '../src/short/script.js';
 import {
@@ -8,6 +11,9 @@ import {
   estimateWordTimings,
   matchSegments,
   normalizeToken,
+  diagnoseVoice,
+  synthSpeech,
+  MIN_VOICE_BYTES,
   DEFAULT_VOICE,
 } from '../src/short/voice.js';
 import { buildCaptionChunks, buildAss } from '../src/short/captions.js';
@@ -160,6 +166,207 @@ test('normalizeToken strips punctuation and case', () => {
 
 test('DEFAULT_VOICE is a free en-IN neural voice', () => {
   assert.match(DEFAULT_VOICE, /^en-IN-/);
+});
+
+// ------------------------------------------------- voice.js: output gate
+
+/**
+ * Lay down a voice.mp3/voice.srt pair in a scratch dir, hand it to fn, clean up.
+ * Pass `mp3: null` / `srt: null` to leave that file unwritten.
+ */
+function withVoice({ mp3 = Buffer.alloc(64 * 1024, 1), srt = '1\n00:00:00,000 --> 00:00:01,000\nHi\n' } = {}, fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'voicetest-'));
+  const mp3File = path.join(dir, 'voice.mp3');
+  const srtFile = path.join(dir, 'voice.srt');
+  if (mp3 !== null) fs.writeFileSync(mp3File, mp3);
+  if (srt !== null) fs.writeFileSync(srtFile, srt);
+  try {
+    return fn({ mp3File, srtFile });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const decode = (file) => ({ duration: 31.4, size: fs.statSync(file).size });
+const truncated = () => {
+  throw new Error(
+    'ffprobe exited 1: [mp3 @ 0x55] Failed to read frame size: Could not seek to 1026.'
+  );
+};
+const noFfprobe = () => {
+  throw new Error('ffprobe not found — install it (free) or set FFPROBE_PATH.');
+};
+
+test('diagnoseVoice: a decodable narration is healthy', () => {
+  withVoice({}, ({ mp3File, srtFile }) => {
+    assert.equal(diagnoseVoice({ mp3File, srtFile, probe: decode }), '');
+  });
+});
+
+test('diagnoseVoice: rejects the 1 KB truncated stream that exists on disk', () => {
+  // Production failure, 2026-10-12: both files were present, the mp3 was ~1 KB,
+  // and the old existsSync gate passed it — the breakage only surfaced later as
+  // `ffprobe exited 1` during assembly.
+  withVoice({ mp3: Buffer.alloc(1026, 0) }, ({ mp3File, srtFile }) => {
+    const why = diagnoseVoice({ mp3File, srtFile, probe: truncated });
+    assert.match(why, /cannot be decoded/);
+    assert.match(why, /Could not seek to 1026/, 'the decode failure must survive into the message');
+  });
+});
+
+test('diagnoseVoice: reports a zero-length stream', () => {
+  withVoice({}, ({ mp3File, srtFile }) => {
+    assert.match(
+      diagnoseVoice({ mp3File, srtFile, probe: () => ({ duration: 0 }) }),
+      /zero duration/
+    );
+  });
+});
+
+test('diagnoseVoice: reports a missing or empty half of the pair', () => {
+  withVoice({ srt: null }, ({ mp3File, srtFile }) => {
+    assert.match(diagnoseVoice({ mp3File, srtFile, probe: decode }), /voice\.srt was not written/);
+  });
+  withVoice({ mp3: null }, ({ mp3File, srtFile }) => {
+    assert.match(diagnoseVoice({ mp3File, srtFile, probe: decode }), /voice\.mp3 was not written/);
+  });
+  withVoice({ mp3: Buffer.alloc(0) }, ({ mp3File, srtFile }) => {
+    assert.match(diagnoseVoice({ mp3File, srtFile, probe: decode }), /voice\.mp3 is empty/);
+  });
+  withVoice({ srt: Buffer.alloc(0) }, ({ mp3File, srtFile }) => {
+    assert.match(diagnoseVoice({ mp3File, srtFile, probe: decode }), /voice\.srt is empty/);
+  });
+});
+
+test('diagnoseVoice: without ffprobe it falls back to the size floor', () => {
+  withVoice({ mp3: Buffer.alloc(1026, 0) }, ({ mp3File, srtFile }) => {
+    assert.match(
+      diagnoseVoice({ mp3File, srtFile, probe: noFfprobe }),
+      /only 1026 bytes/,
+      'the truncation must still be caught when ffprobe is absent'
+    );
+  });
+  withVoice({ mp3: Buffer.alloc(MIN_VOICE_BYTES, 1) }, ({ mp3File, srtFile }) => {
+    assert.equal(diagnoseVoice({ mp3File, srtFile, probe: noFfprobe }), '');
+  });
+});
+
+// ---------------------------------------------- voice.js: synthesis retry
+
+const SRT = '1\n00:00:00,000 --> 00:00:01,000\nHello\n';
+
+/** 1s of 16-bit mono silence as RIFF/WAVE — decodable from the header alone. */
+function silentWav(seconds = 1) {
+  const rate = 8000;
+  const data = Buffer.alloc(rate * seconds * 2);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0);
+  h.writeUInt32LE(36 + data.length, 4);
+  h.write('WAVE', 8);
+  h.write('fmt ', 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); // PCM
+  h.writeUInt16LE(1, 22); // mono
+  h.writeUInt32LE(rate, 24);
+  h.writeUInt32LE(rate * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write('data', 36);
+  h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
+
+function scratch() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'synth-'));
+}
+
+test('synthSpeech: a truncated synthesis is re-run rather than passed through', async () => {
+  const dir = scratch();
+  const outFile = path.join(dir, 'voice.mp3');
+  let calls = 0;
+  const run = async ({ outFile: mp3, srtFile }) => {
+    calls += 1;
+    // attempt 1 reproduces the 2026-10-12 failure: both files written, mp3 dead
+    fs.writeFileSync(mp3, calls === 1 ? Buffer.alloc(1026, 0) : silentWav());
+    fs.writeFileSync(srtFile, SRT);
+    return { code: 0, stderr: '', timedOut: false };
+  };
+
+  try {
+    const res = await synthSpeech({ text: 'Nifty is oversold today.', outFile, run });
+    assert.equal(calls, 2, 'the bad attempt must be retried');
+    assert.equal(res.attempts, 2);
+    assert.equal(res.file, outFile);
+    assert.equal(fs.existsSync(`${outFile}.txt`), true, 'narration kept as an artifact');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('synthSpeech: gives up after `attempts`, naming the reason and the CLI output', async () => {
+  const dir = scratch();
+  const outFile = path.join(dir, 'voice.mp3');
+  let calls = 0;
+  const run = async ({ outFile: mp3, srtFile }) => {
+    calls += 1;
+    fs.writeFileSync(mp3, Buffer.alloc(1026, 0));
+    fs.writeFileSync(srtFile, SRT);
+    return { code: 1, stderr: 'upstream stream reset', timedOut: false };
+  };
+
+  try {
+    await assert.rejects(
+      () => synthSpeech({ text: 'Nifty is oversold today.', outFile, run, attempts: 3 }),
+      (err) => {
+        assert.match(err.message, /after 3 attempt\(s\)/);
+        assert.match(err.message, /cannot be decoded|only 1026 bytes/);
+        assert.match(err.message, /upstream stream reset/, 'CLI stderr must reach the caller');
+        return true;
+      }
+    );
+    assert.equal(calls, 3, 'every attempt should be spent before failing');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('synthSpeech: a leftover voice.mp3 cannot mask a synthesis that wrote nothing', async () => {
+  const dir = scratch();
+  const outFile = path.join(dir, 'voice.mp3');
+  // leftovers from a previous short — good-looking, but not this run's work
+  fs.writeFileSync(outFile, silentWav());
+  fs.writeFileSync(path.join(dir, 'voice.srt'), SRT);
+
+  let calls = 0;
+  const run = async () => {
+    calls += 1;
+    return { code: 1, stderr: 'no output', timedOut: false };
+  };
+
+  try {
+    await assert.rejects(() => synthSpeech({ text: 'Nifty.', outFile, run, attempts: 2 }));
+    assert.equal(calls, 2, 'stale files must be cleared, not accepted');
+    assert.equal(fs.existsSync(outFile), false, 'the stale file should have been removed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('synthSpeech: a timeout aborts the stage instead of burning the retry budget', async () => {
+  const dir = scratch();
+  const outFile = path.join(dir, 'voice.mp3');
+  let calls = 0;
+  const run = async () => {
+    calls += 1;
+    return { code: null, stderr: '', timedOut: true };
+  };
+
+  try {
+    await assert.rejects(() => synthSpeech({ text: 'Nifty.', outFile, run, attempts: 3 }), /timed out/);
+    assert.equal(calls, 1, 'waiting again would only multiply the stall');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ------------------------------------------------------------ captions.js

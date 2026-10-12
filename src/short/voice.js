@@ -5,7 +5,11 @@
  * narration into an MP3 plus an SRT subtitle track, then derives the data
  * every later stage needs:
  *
- *   synthSpeech      — narration text → voice.mp3 + voice.srt (free, no API key)
+ *   synthSpeech      — narration text → voice.mp3 + voice.srt (free, no API
+ *                      key); the output is decoded and, if it is unusable, the
+ *                      synthesis is re-run before the stage gives up
+ *   diagnoseVoice    — why a freshly written voice.mp3/voice.srt pair is or is
+ *                      not a usable narration ('' = healthy)
  *   parseSrt        — SRT → [{start, end, text}] cues in seconds
  *   estimateWordTimings — sub-cue word timings (proportional estimate, good
  *                         enough for caption chunking and scene boundaries)
@@ -21,28 +25,69 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
+import { ffprobeInfo } from './assemble.js';
+
 /** Free en-IN neural voice; Neerja = female (channel default), Prabhat = male. */
 export const DEFAULT_VOICE = 'en-IN-NeerjaNeural';
 
+/** Size floor used only when ffprobe is unavailable — see diagnoseVoice(). */
+export const MIN_VOICE_BYTES = 8 * 1024;
+
+function rmQuiet(file) {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* best effort — a leftover file would only weaken the next check */
+  }
+}
+
 /**
- * Run edge-tts on a narration file.
- * @returns {Promise<{file: string, srtFile: string, txtFile: string}>}
+ * Is what edge-tts just wrote a *usable* narration?
+ *
+ * Returns `''` when healthy, otherwise a one-line reason to discard the attempt.
+ *
+ * Existence proves nothing. On 2026-10-12 edge-tts exited having written a
+ * ~1 KB voice.mp3 for 80 words of speech, done in 0.7s end to end. The old gate
+ * — `existsSync(mp3) && existsSync(srt)` — waved it straight through, and the
+ * damage only surfaced much later as `ffprobe exited 1` while assembling, an
+ * error naming the wrong stage entirely. Validate here, where a retry can still
+ * rescue the run.
+ *
+ * `probe` is injectable so tests do not need ffprobe on PATH.
  */
-export function synthSpeech({
-  text,
-  outFile,
-  voice = DEFAULT_VOICE,
-  rate = '+14%',
-  command = 'edge-tts',
-  timeoutMs = 120_000,
-} = {}) {
-  if (!text || !text.trim()) return Promise.reject(new Error('synthSpeech: empty narration'));
-  if (!outFile) return Promise.reject(new Error('synthSpeech: outFile required'));
+export function diagnoseVoice({ mp3File, srtFile, probe = ffprobeInfo }) {
+  for (const [label, file] of [
+    ['voice.mp3', mp3File],
+    ['voice.srt', srtFile],
+  ]) {
+    let st;
+    try {
+      st = fs.statSync(file);
+    } catch {
+      return `${label} was not written`;
+    }
+    if (!st.size) return `${label} is empty`;
+  }
 
-  const txtFile = `${outFile}.txt`;
-  const srtFile = outFile.replace(/\.[^.]+$/, '.srt');
-  fs.writeFileSync(txtFile, text, 'utf8');
+  try {
+    const info = probe(mp3File);
+    return Number(info?.duration) > 0 ? '' : 'voice.mp3 reports zero duration';
+  } catch (err) {
+    const msg = String(err?.message ?? err).replace(/\s+/g, ' ').slice(0, 200);
+    // No ffprobe on this box → fall back to the size floor. Any other failure
+    // means the stream cannot be decoded, which is precisely the truncation bug.
+    if (!/not found/i.test(msg)) return `voice.mp3 cannot be decoded: ${msg}`;
+    const size = fs.statSync(mp3File).size;
+    return size >= MIN_VOICE_BYTES ? '' : `voice.mp3 is only ${size} bytes`;
+  }
+}
 
+/**
+ * One edge-tts invocation. Resolves rather than rejects on a bad exit so the
+ * caller can retry; a spawn failure still rejects, since re-running a binary
+ * that is not there would only delay the same error.
+ */
+function runEdgeTts({ txtFile, outFile, srtFile, voice, rate, command, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       command,
@@ -56,9 +101,10 @@ export function synthSpeech({
       { windowsHide: true }
     );
     let stderr = '';
+    let timedOut = false;
     const timer = setTimeout(() => {
+      timedOut = true;
       child.kill();
-      reject(new Error(`edge-tts timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     child.stderr.on('data', (d) => { stderr += d; });
@@ -68,15 +114,63 @@ export function synthSpeech({
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      // edge-tts 7.x on Windows py3.9 can print a harmless asyncio shutdown
-      // traceback after successfully writing both files — trust the outputs.
-      if (fs.existsSync(outFile) && fs.existsSync(srtFile)) {
-        resolve({ file: outFile, srtFile, txtFile });
-      } else {
-        reject(new Error(`edge-tts exited ${code} without outputs: ${stderr.slice(-500)}`));
-      }
+      resolve({ code, stderr, timedOut });
     });
   });
+}
+
+/**
+ * Run edge-tts on a narration file, re-running whenever the output is unusable.
+ *
+ * Retrying is safe and cheap here: edge-tts is stateless, and a truncated
+ * stream is transient (the observed 2026-10-12 failure reproduced twice a day
+ * and passed on the runs in between).
+ *
+ * @param {object}   [opts]
+ * @param {number}   [opts.attempts=3]  how many times to re-synthesize
+ * @param {Function} [opts.run]         swap the edge-tts invocation (tests)
+ * @returns {Promise<{file: string, srtFile: string, txtFile: string, attempts: number}>}
+ */
+export function synthSpeech({
+  text,
+  outFile,
+  voice = DEFAULT_VOICE,
+  rate = '+14%',
+  command = 'edge-tts',
+  timeoutMs = 120_000,
+  attempts = 3,
+  run = runEdgeTts,
+} = {}) {
+  if (!text || !text.trim()) return Promise.reject(new Error('synthSpeech: empty narration'));
+  if (!outFile) return Promise.reject(new Error('synthSpeech: outFile required'));
+
+  const txtFile = `${outFile}.txt`;
+  const srtFile = outFile.replace(/\.[^.]+$/, '.srt');
+  fs.writeFileSync(txtFile, text, 'utf8');
+
+  return (async () => {
+    let why = 'edge-tts never ran';
+    let stderr = '';
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      // Clear both, or a file left by an earlier run would satisfy the check
+      // while this run's synthesis produced nothing at all.
+      rmQuiet(outFile);
+      rmQuiet(srtFile);
+
+      const res = await run({ txtFile, outFile, srtFile, voice, rate, command, timeoutMs });
+      if (res.timedOut) throw new Error(`edge-tts timed out after ${timeoutMs}ms`);
+      stderr = res.stderr ?? '';
+
+      why = diagnoseVoice({ mp3File: outFile, srtFile });
+      if (!why) return { file: outFile, srtFile, txtFile, attempts: attempt };
+    }
+
+    throw new Error(
+      `edge-tts produced unusable output after ${attempts} attempt(s): ${why}` +
+        (stderr ? ` — ${stderr.slice(-500)}` : '')
+    );
+  })();
 }
 
 /** "HH:MM:SS,mmm" → seconds */
