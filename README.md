@@ -610,7 +610,7 @@ events via `market-check --dry-run` (fetch + store, no sends) →
 
 - Events are self-fetched every run, so a cold or missing cache never blocks
   the story (no cross-workflow dependency on the 08:30 pre-market run's save)
-- Job ids for API edits: story = `8588155`, recap = `8588157`
+- Job ids for API edits: story = `8588155`, recap = `8588157`, news roundup = `8637184`
 - No YouTube secrets yet → logs "not authorised" and still renders — the
   consent step never blocks rendering
 - Change time/language: edit the jobs in the cron-job.org console (API:
