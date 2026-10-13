@@ -66,6 +66,12 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
           python3 -m pip install --user edge-tts
+          # edge-tts 7.2.8 gets HTTP 403 on the synthesis WebSocket from
+          # runner IPs (Microsoft's Oct 2026 rollout) — apply the vendored
+          # hotfix that switches to api.msedgeservices.com, like real Edge
+          # (upstream: rany2/edge-tts PR #491). No-op once pip installs a
+          # fixed release (7.2.9+).
+          python3 scripts/patch-edge-tts.py
           # edge-tts console script lands in ~/.local/bin for --user installs
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
