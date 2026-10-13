@@ -34,7 +34,7 @@ src/
   telegram/      alert + briefing formatting, transports (dry-run / JSON emit / gramjs later)
   store/         SQLite (node:sqlite) + in-memory store
   log/           structured stage logging with secret redaction
-  short/         Market → Short factory (story + market-recap shorts, en/hinglish/hindi voice): script → edge-tts voice → scene PNGs → captions → ffmpeg MP4
+  short/         Market → Short factory (story, market-recap + news-roundup shorts, en/hinglish/hindi voice): script → edge-tts voice → scene PNGs → captions → ffmpeg MP4
   pipeline.js    stage orchestration (each stage is its own module)
   index.js       CLI entry
 test/            node:test unit + integration tests (offline fixtures)
@@ -428,6 +428,7 @@ event + verdict → script → voice → scene PNGs → burned captions → shor
 ```bash
 npm run short                  # newest store event → artifacts/shorts/run-<ts>/short.mp4 + meta.json
 npm run recap                  # today's market recap: top gainers/losers + candle charts + store news
+npm run news                   # market news roundup: top stories of the day (RSS, last 24h)
 npm run short -- --demo        # labelled SAMPLE event, no store needed
 npm run short -- --event <id>  # a specific event
 npm run short -- --ai          # fresh (free-tier) AI verdict instead of the stored one
@@ -483,6 +484,29 @@ top gainers/losers + index pulse + store news → scenes with candle charts → 
   labelled SAMPLE fixture with synthetic candles.
 - Weekends/holidays exit early ("no new session to recap") so a closed market
   can never re-publish the previous session's movers under a new date.
+
+### Market news roundup (`--type news-roundup` / `npm run news`)
+
+A third short type: "the important market news of the day, in about a
+minute", built straight from market RSS feeds (no store needed):
+
+```
+ET Markets + Livemint RSS (Moneycontrol / Business Standard best-effort)
+  → 24h window → cluster syndicated duplicates → top 3 by keyword score
+  → rules verdict (+ optional AI polish) → short.mp4
+```
+
+| Stage | Module | Free source |
+|---|---|---|
+| Feed merge + dedupe + top-3 | `src/short/news.js` | ET Markets / Livemint / Moneycontrol / Business Standard public RSS |
+| Rules verdict (always renderable) | `src/short/news.js` `buildRoundupVerdict` | headline carries the day label, facts = the 3 stories |
+| AI polish | the existing `src/ai` service | only when a key is configured; any failure keeps the rules verdict |
+
+- The synthetic event id is per-IST-day (`evt_news_roundup_YYYYMMDD`), so the
+  YouTube registry dedups to **one roundup per day** on re-runs.
+- Individual feed failures are tolerated (Moneycontrol 503s routinely from
+  datacenter IPs); *zero* fresh stories fails loudly instead of rendering an
+  empty short.
 
 ### Auto-upload to YouTube (`--upload`)
 
@@ -566,7 +590,7 @@ Notes:
 - Reel spec compliance is automatic: our 1080×1920 H.264 MP4 (~40 s, ~1–3 MB)
   sits well inside Meta's limits (≤15 min, ≤300 MB, 23–60 fps)
 
-### Twice-daily schedule (cron-job.org → GitHub Actions)
+### Three-times-daily schedule (cron-job.org → GitHub Actions)
 
 The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
 `short-factory.yml`** — cloud runs, PC not required:
@@ -575,6 +599,7 @@ The schedule lives where the rest of the fleet lives: **cron-job.org dispatches
 |---|---|---|
 | `New Age Algos \| Story Short (09:00 IST)` | 09:00 IST | `short-factory.yml` `type=story lang=en upload=true` |
 | `New Age Algos \| Recap Short (16:15 IST)` | 16:15 IST | `short-factory.yml` `type=recap lang=en upload=true` |
+| `New Age Algos \| News Roundup (17:30 IST)` | 17:30 IST | `short-factory.yml` `type=news-roundup lang=en upload=true` |
 
 Each CI run: `apt ffmpeg` + `pip --user edge-tts` (both free) → restore the
 shared `market-state-` cache (upload registry + prior state) → refresh its own
@@ -588,7 +613,7 @@ events via `market-check --dry-run` (fetch + store, no sends) →
 - Job ids for API edits: story = `8588155`, recap = `8588157`
 - No YouTube secrets yet → logs "not authorised" and still renders — the
   consent step never blocks rendering
-- Change time/language: edit the two jobs in the cron-job.org console (API:
+- Change time/language: edit the jobs in the cron-job.org console (API:
   `PATCH /api/jobs/<id>`) or the `lang` default in `short-factory.yml`
 
 **Local fallback (registered, disabled):** Windows tasks

@@ -4,6 +4,7 @@
  *
  *   npm run short                    → newest store event → artifacts/shorts/run-<ts>/short.mp4
  *   npm run recap                    → today's market recap (top gainers/losers + charts)
+ *   npm run news                     → market news roundup (top stories from RSS, last 24h)
  *   npm run short -- --lang hinglish → Hinglish voiceover (English visuals)
  *   npm run short -- --lang hindi    → Hindi voiceover (Devanagari captions)
  *   npm run short -- --event <id>    → a specific event
@@ -16,7 +17,7 @@
  *   npm run short -- --upload-all    → publish every finished run not yet up
  *   npm run short -- --json          → machine-readable summary
  *
- * Flags: --type story|recap   --lang en|hinglish|hindi
+ * Flags: --type story|recap|news-roundup   --lang en|hinglish|hindi
  *        --voice <id>  --rate <+N%>  --out <dir>
  * Everything downstream of the data is deterministic and free:
  * Yahoo Finance (recap numbers, no key), Gemini free tier (optional
@@ -33,6 +34,7 @@ import { createOpenAIService, fallbackVerdict } from '../src/ai/openaiService.js
 import { makeShort } from '../src/short/index.js';
 import { demoRecap } from '../src/short/recap.js';
 import { fetchMovers, fetchIndexPulse } from '../src/short/marketData.js';
+import { fetchNewsRoundup } from '../src/short/news.js';
 import { normalizeLang } from '../src/short/lang.js';
 import {
   uploadShort,
@@ -105,8 +107,8 @@ function parseFlags(argv) {
     else if (!a.startsWith('--')) flags.event = a;
     else throw new Error(`unknown flag: ${a}`);
   }
-  if (!['story', 'recap'].includes(flags.type)) {
-    throw new Error(`unknown type "${flags.type}" — use story | recap`);
+  if (!['story', 'recap', 'news-roundup'].includes(flags.type)) {
+    throw new Error(`unknown type "${flags.type}" — use story | recap | news-roundup`);
   }
   flags.lang = normalizeLang(flags.lang);
   return flags;
@@ -136,6 +138,7 @@ async function main() {
         '',
         '  (no flags)        newest store event → story short',
         '  --type recap      today\'s top gainers/losers + candle charts',
+        '  --type news-roundup  top market news of the day (RSS, last 24h)',
         '  --lang <l>        en (default) | hinglish | hindi — spoken narration',
         '  --event <id>      specific event id',
         '  --demo            labelled SAMPLE data',
@@ -212,6 +215,33 @@ async function main() {
       }
       store = openStore({ driver: 'sqlite', dbPath: settings.paths.db });
       recap = await liveRecap({ store });
+    }
+  } else if (flags.type === 'news-roundup') {
+    // Top market headlines of the last 24h (RSS, multi-feed, deduped).
+    // Rules verdict first (always renderable), then an optional AI polish
+    // when a key is configured — a polish failure never kills the run.
+    const roundup = await fetchNewsRoundup({ logger: console });
+    event = roundup.event;
+    verdict = roundup.verdict;
+    const svc = createOpenAIService({ settings, logger: console });
+    if (svc.hasKey) {
+      try {
+        const ai = await svc.analyze(event);
+        if (ai?.headline && Array.isArray(ai.facts) && ai.facts.length >= 2) {
+          verdict = {
+            ...verdict,
+            ...ai,
+            summary: ai.summary?.trim() ? ai.summary : verdict.summary,
+          };
+          console.log(`AI verdict: ${verdict.headline}`);
+        } else {
+          console.log('note: AI verdict unusable — keeping the rules verdict');
+        }
+      } catch (err) {
+        console.log(`note: AI polish failed (${err.message}) — keeping the rules verdict`);
+      }
+    } else {
+      console.log('note: no AI key configured — rules verdict for the roundup');
     }
   } else if (flags.demo) {
     event = DEMO_EVENT;

@@ -3,8 +3,8 @@ name: Short Factory
 on:
   # NOTE: no `schedule:` here — same reason as market-intelligence.yml: GitHub's
   # scheduler never fired reliably for this account, so cron-job.org is the sole
-  # scheduler. It dispatches this workflow twice a day (Mon-Fri, IST):
-  #   09:00 -> type=story   16:15 -> type=recap
+  # scheduler. It dispatches this workflow up to three times a day (Mon-Fri, IST):
+  #   09:00 -> type=story   16:15 -> type=recap   17:30 -> type=news-roundup
   # The per-job schedules live in the cron-job.org console, not here.
   workflow_dispatch:
     inputs:
@@ -15,6 +15,7 @@ on:
         options:
           - story
           - recap
+          - news-roundup
       lang:
         description: 'Spoken narration language'
         type: choice
