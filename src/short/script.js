@@ -60,10 +60,16 @@ export function sentence(value) {
 export function buildShort({ event = {}, verdict = {}, handle = DEFAULT_HANDLE } = {}) {
   const v = verdict ?? {};
   const headline = clip(v.headline || event.title || 'Market update', 200);
+  // List-style verdicts (e.g. "5 events", "5 movies") may ask for more than
+  // the default 3 fact scenes via `max_facts` (clamped 1..8); everything else
+  // keeps the 3-scene default unchanged.
+  const maxFacts = Number.isFinite(v.max_facts)
+    ? Math.min(Math.max(Math.trunc(v.max_facts), 1), 8)
+    : MAX_FACTS;
   const facts = (Array.isArray(v.facts) ? v.facts : [])
     .map((f) => String(f ?? '').trim())
     .filter(Boolean)
-    .slice(0, MAX_FACTS);
+    .slice(0, maxFacts);
   const relevance = String(v.market_relevance ?? '').trim();
   const summary = String(v.summary ?? event.description ?? '').trim();
 

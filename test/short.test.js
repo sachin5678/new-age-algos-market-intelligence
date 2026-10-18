@@ -78,6 +78,27 @@ test('buildShort: caps facts at 3', () => {
   assert.equal(short.scenes.filter((s) => s.kind === 'fact').length, 3);
 });
 
+test('buildShort: verdict.max_facts raises the cap for list-style shorts', () => {
+  const many = { ...verdict, facts: ['a', 'b', 'c', 'd', 'e'], max_facts: 5 };
+  const short = buildShort({ event, verdict: many });
+  const facts = short.scenes.filter((s) => s.kind === 'fact');
+  assert.equal(facts.length, 5);
+  assert.deepEqual(
+    facts.map((f) => [f.n, f.of]),
+    [[1, 5], [2, 5], [3, 5], [4, 5], [5, 5]]
+  );
+});
+
+test('buildShort: max_facts is clamped — nonsense stays renderable', () => {
+  const tooMany = { ...verdict, facts: Array(12).fill('fact'), max_facts: 99 };
+  const short = buildShort({ event, verdict: tooMany });
+  assert.equal(short.scenes.filter((s) => s.kind === 'fact').length, 8);
+
+  const nonsense = { ...verdict, facts: ['a', 'b'], max_facts: 0 };
+  const one = buildShort({ event, verdict: nonsense });
+  assert.equal(one.scenes.filter((s) => s.kind === 'fact').length, 1);
+});
+
 // ------------------------------------------------------------- voice.js
 
 test('parseTimecode handles HH:MM:SS,mmm', () => {
