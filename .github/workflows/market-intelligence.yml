@@ -135,35 +135,30 @@ jobs:
         if: ${{ github.event.inputs.job_type == 'premarket' }}
         run: node src/index.js --mode premarket --briefing premarket
 
-      # One-off provisioning: put the dedicated TEST bot into the test group and
-      # give it the right to post. Safe to re-run (it is a no-op when the bot is
-      # already a member). The production bot is the one that can hand out the
-      # invite link and promote — the test bot cannot add itself.
+      # One-off provisioning: give the dedicated TEST bot the right to post in
+      # the test channel. promoteChatMember is also the "add a bot as a channel
+      # admin" call — Telegram refuses to add a bot to a broadcast channel any
+      # other way (channels.inviteToChannel -> USER_BOT). Safe to re-run.
       - name: Provision test bot
         if: ${{ github.event.inputs.job_type == 'setup-test-bot' }}
         env:
           PROD_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TEST_BOT_TOKEN: ${{ secrets.TELEGRAM_TEST_BOT_TOKEN }}
-          TEST_CHAT_ID: '-1004497477393'
+          TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID || '-1004497477393' }}
         run: |
           set -euo pipefail
-          prod_id=$(curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getMe" | jq -r .result.id)
           test_id=$(curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getMe" | jq -r .result.id)
-          echo "prod bot: ${prod_id}  test bot: ${test_id}"
-          members=$(curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getChatMembers?chat_id=${TEST_CHAT_ID}" || true)
-          if echo "${members}" | jq -e --arg id "${test_id}" '.result[] | select(.user.id == ($id | tonumber))' >/dev/null 2>&1; then
-            echo "test bot is already a member"
-          else
-            link=$(curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/createChatInviteLink" \
-              -H 'Content-Type: application/json' -d "{\"chat_id\":${TEST_CHAT_ID}}" | jq -r .result.invite_link)
-            echo "invite link: ${link}"
-            curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/joinChat" \
-              -H 'Content-Type: application/json' -d "{\"invite_link\":\"${link}\"}"
-            echo
-          fi
+          echo "test bot id: ${test_id}"
+          echo "--- promote (also adds it as a member when needed) ---"
           curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/promoteChatMember" \
             -H 'Content-Type: application/json' \
             -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id},\"can_post_messages\":true,\"can_manage_chat\":false,\"can_delete_messages\":false,\"can_restrict_members\":false,\"can_promote_members\":false,\"can_change_info\":false,\"can_invite_users\":false,\"can_pin_messages\":false,\"is_anonymous\":false}"
+          echo
+          echo "--- verify ---"
+          curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getChat?chat_id=${TEST_CHAT_ID}" | jq -c '{ok, title: .result.title, id: .result.id}'
+          curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/sendMessage" \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\":${TEST_CHAT_ID},\"text\":\"🤖 Test bot online — test messages land here from now on.\"}"
           echo
 
       - name: Save state to cache
