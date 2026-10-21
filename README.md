@@ -17,36 +17,36 @@ node src/index.js --briefing market-wrap --dry-run   # render the post-market wr
 node src/index.js --briefing closing --dry-run       # alias of market-wrap
 ```
 
-## The post-market wrap (what the channel posts)
+## The post-market card (what the channel posts)
 
-One message after the close, and nothing before the open:
+One **image** after the close, and nothing else during the day:
 
 ```
-🌙 NEW AGE ALGOS — POST-MARKET 21 Oct 2026 • 15:45 IST
-
-📈 NIFTY 50 22,677.35 (-0.92%) • NIFTY BANK 54,780.6 (-1.28%) • SENSEX 73,318.17 (-0.72%)
-
-🟢 TOP GAINERS NIFTY 500
-1. LTTS +10.15% — L&T Technology Services Ltd. @ ₹3,978
-2. INDIACEM +10.04% — India Cements Ltd. @ ₹323.9
-3. FRACTAL +8.90% — Fractal Analytics Ltd. @ ₹776.95
-
-🔴 TOP LOSERS NIFTY 500
-1. BIRET -17.65% — Brookfield India Real Estate Trust @ ₹263.49
-2. EMBASSY -15.04% — EMBASSY OFFICE PARKS REIT @ ₹369.92
-3. HSCL -11.41% — Himadri Speciality Chemical Ltd. @ ₹536.75
-
-📰 BIGGEST NEWS
-Gold may test 4,000-mark if oil extends rally; US Fed moves eyed: Kotak Neo — Business Standard
+▌ MARKET CLOSING WRAP | 21 OCT 2026
+▌ NIFTY 50 FALLS 78 POINTS | INDIACEM LEADS THE TAPE
+▌ ◆ NIFTY 50 22,811.35            ● -0.34%
+▌ ◆ NIFTY BANK 54,976.90          ● -0.92%
+▌ ◆ SENSEX 73,709.69              ● -0.19%
+▌ 📊 KEY HIGHLIGHTS — NIFTY 50 closed 0.34% lower at 22,811.35 · INDIACEM led the index, up 12.04% …
+▌ 📰 BIGGEST NEWS — the day's biggest story, with its source
+▌ 🔥 TOP MOVERS (NIFTY 500) — 3 gainers, 3 losers, with % and price
+▌ ⚡ NEW AGE ALGOS · Data-driven • Systematic · Transparent
 ```
 
 | Piece | Where |
 |---|---|
-| Renderer (one message, escaped, nothing invented) | `src/telegram/market-wrap.js` |
+| Card renderer (HTML → PNG, content-sized) | `src/visual/market-wrap-card.js` |
+| Delivery (render → QA → sendPhoto, text fallback) | `VisualDeliver.sendMarketWrap()` in `src/visual/deliver.js` |
 | Context (benchmark line, 3 + 3 movers, the day's story) | `buildMarketWrapContext()` in `src/briefings/context.js` |
+| Text fallback (same data, plain text) | `src/telegram/market-wrap.js` |
 | NIFTY 500 universe + day % change | `src/market/nifty500.js` |
 | NIFTY 50 / NIFTY BANK / SENSEX pulse (fallback) | `src/market/indices.js` |
 | The story of the day | the channel's event store first, market RSS feeds when the store is cold |
+
+**The card is derived, never written.** The session headline ("NIFTY 50 FALLS 78
+POINTS | INDIACEM LEADS THE TAPE") is computed from the index value, its move
+and the top mover; the highlights are the same numbers in words. A section
+with no data is omitted. Every dynamic string is escaped.
 
 **Where the numbers come from**
 
@@ -60,6 +60,9 @@ Gold may test 4,000-mark if oil extends rally; US Fed moves eyed: Kotak Neo — 
 - **Stale quotes never reach the reader** — a bar older than four days is
   dropped, a symbol with no price is skipped, and a run that saw fewer than
   100 constituents falls back to the bundled list.
+- **The lead story** — the best-READING headline of the roundup, not merely the
+  first one: feed SEO furniture ("…, Preview, earnings schedule, history,
+  yield") is stripped, and a headline covered by two feeds outranks one.
 
 ## Layout
 
@@ -124,13 +127,14 @@ console, which POSTs `workflow_dispatch`:
 
 | Job | cron-job.org job id | cron-job.org schedule | `job_type` |
 |---|---|---|---|
-| **Post-market wrap** | `8581624` | `15 10 * * 1-5` (15:45 IST) | `market-wrap` |
+| **Post-market card** | `8581624` | `15 10 * * 1-5` (15:45 IST) | `market-wrap` |
 | Pre-market briefing | `8581622` | `0 3 * * 1-5` (08:30 IST) | `premarket` — **retired, disabled, posts nothing** |
-| Market check | `8581623` | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` (currently disabled) |
+| Market check (intraday alerts) | `8581623` | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` — **retired, disabled, posts nothing** |
 
-The pre-market summary was retired: the channel posts ONE message after the
-close. The cron job is disabled **and** the CLI no-ops the `premarket` briefing,
-so a stale dispatch can never post the old format again.
+Two structures are retired: the pre-market summary and the intraday news
+alert stream. The channel's ONE daily post is the post-market card. Both cron
+jobs are disabled **and** the CLI no-ops them, so a stale dispatch can never
+post the old format again.
 
 Each job POSTs to
 `/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches`
@@ -423,14 +427,18 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 
 ### Production behaviour (GitHub Actions)
 
-- The only scheduled channel post is the **post-market wrap** — ONE text message
-  (`src/telegram/market-wrap.js`): the benchmark line, the day's top 3 gainers
-  and top 3 losers from the NIFTY 500, and the single biggest news of the day.
-  The pre-market summary and the old multi-section closing digest are retired.
+- The only scheduled channel post is the **post-market card** — ONE image
+  (`src/visual/market-wrap-card.js`): the benchmark line, the day's top 3
+  gainers and top 3 losers from the NIFTY 500, and the single biggest news of
+  the day. The card is content-sized (a quiet day renders a shorter card) and
+  the text wrap (`src/telegram/market-wrap.js`) is the fallback when the
+  render fails — a broken image is never sent.
+- The pre-market summary and the intraday news alert stream are **retired**:
+  the CLI no-ops both, so a stray dispatch posts nothing.
 - Intraday alerts are **formatted text** too (`VISUAL_ALERTS` off) — one message
   per story, no image download, no render step that can fail.
-- Images are opt-in: `--visual` on the briefing command, or
-  `VISUAL_ALERTS=true`. Both remain supported; only the scheduled default moved.
+- Images are opt-in elsewhere: `--visual` on the briefing command, or
+  `VISUAL_ALERTS=true`.
 - `VISUAL_PDF` stays `false` — PNG only when images are enabled.
 - Target chat comes from the `TELEGRAM_CHAT_ID` secret — production points at the main channel **@newagealgos** (`-1003067155583`); the bot must be an admin with *Post messages*
 - When images are enabled, artifacts upload as `visual-briefings` (7-day retention) and a render failure is logged and falls back to the text briefing, never a broken image

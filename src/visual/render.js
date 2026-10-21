@@ -523,6 +523,7 @@ export function visualFileName({ type, date, now = null }) {
     }
     return `breaking-${day}-${p.hour}${p.minute}`;
   }
+  if (type === 'market-wrap') return `market-wrap-${day}`;
   const base = type === 'closing' ? 'closing' : 'premarket';
   return `${base}-${day}`;
 }

@@ -168,6 +168,35 @@ export function istDateLabel(now = Date.now()) {
   return { iso: `${y}-${m}-${d}`, label: `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}` };
 }
 
+/**
+ * The lead story of the day from a roundup.
+ *
+ * Feeds publish SEO furniture ("Infosys Q2 results, dividend 2026 amount,
+ * record date announcement date-time: Preview, earnings schedule, history,
+ * yield"). A headline like that is not what a reader wants FIRST, so the lead
+ * picks the best-READING headline of the day — not merely the first one.
+ * Ordering is stable: the original rank breaks ties.
+ */
+export function pickLeadStory(stories = []) {
+  const hygiene = (title) => {
+    const s = String(title ?? '');
+    if (!s) return -1e9;
+    let score = 0;
+    const len = s.length;
+    if (len >= 30 && len <= 130) score += 3;
+    else if (len < 20) score -= 2;
+    if (/date[- ]time/i.test(s)) score -= 6;
+    const commas = (s.match(/,/g) ?? []).length;
+    if (commas > 2) score -= (commas - 2) * 2;
+    if (/\b(preview|history|yield|full story)\b/i.test(s)) score -= 3;
+    return score;
+  };
+  const scored = stories
+    .map((s, i) => ({ s, i, h: hygiene(s?.title) }))
+    .sort((a, b) => b.h - a.h || a.i - b.i);
+  return scored.length ? scored[0].s : null;
+}
+
 /** Deterministic verdict from the top stories (always renderable). */
 export function buildRoundupVerdict(stories, dateLabel) {
   const sources = [...new Set(stories.flatMap((s) => s.sources ?? []))];

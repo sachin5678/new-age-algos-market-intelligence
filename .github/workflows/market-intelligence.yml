@@ -103,21 +103,21 @@ jobs:
 
       # The wrap is ONE message (src/telegram/market-wrap.js): the day's top 3
       # gainers and top 3 losers from the NIFTY 500 plus the single biggest
-      # news of the day. --visual / VISUAL_* must stay off: the image path
-      # delivered one message PER PAGE, which readers experienced as 5–7 spam
-      # posts twice a day.
+      # news of the day — posted as ONE content-sized card
+      # (src/visual/market-wrap-card.js). The text digest is the fallback if
+      # the card cannot be rendered.
       - name: Run post-market wrap
         if: ${{ github.event.inputs.job_type == 'market-wrap' || github.event.inputs.job_type == 'closing' }}
         env:
-          VISUAL_BRIEFING: 'false'
+          VISUAL_BRIEFING: 'true'
           VISUAL_PDF: 'false'
         run: node src/index.js --mode closing --briefing market-wrap ${{ env.NO_AI_FLAG }}
 
-      - name: Run market check
+      # The intraday alert stream is retired: one daily post (the card above)
+      # replaces it. A stray dispatch must not post the old stream again.
+      - name: Market check retired (no-op)
         if: ${{ github.event.inputs.job_type == 'market-check' }}
-        env:
-          VISUAL_ALERTS: 'false'
-        run: node src/index.js --mode intraday --job-type market-check ${{ env.NO_AI_FLAG }}
+        run: node src/index.js --mode intraday --job-type market-check
 
       - name: Run market news
         if: ${{ github.event.inputs.job_type == 'market-news' }}

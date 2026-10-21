@@ -19,7 +19,7 @@ import { formatPreMarketDigest, formatClosingDigest } from './telegram/briefing-
 import { formatMarketWrap } from './telegram/market-wrap.js';
 import { fetchNifty500Movers } from './market/nifty500.js';
 import { fetchIndexPulse } from './market/indices.js';
-import { fetchNewsRoundup } from './short/news.js';
+import { fetchNewsRoundup, pickLeadStory } from './short/news.js';
 import { chunkMessage } from './telegram/format.js';
 import { labelChunks } from './telegram/theme.js';
 import { VisualDeliver } from './visual/deliver.js';
@@ -131,11 +131,73 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   let sent = false;
   let sendError = null;
   let movers = { gainers: [], losers: [], scanned: 0, universe: 0, source: 'none' };
+  let wrapCtx = null;
 
-  // If visual enabled, render and send image (+ optional PDF)
+  // ---- the post-market wrap: one data pass, two possible deliveries -------
+  if (kind === 'market-wrap') {
+    // The NIFTY 500 universe and the day's % change for every member.
+    try {
+      movers = await fetchNifty500Movers({ cap: 3, now: now.getTime() });
+      logger.info(
+        'MOVERS',
+        `NIFTY 500: universe=${movers.universe} scanned=${movers.scanned} source=${movers.source} ` +
+          `gainers=${movers.gainers.length} losers=${movers.losers.length} missing=${movers.missing.length}`
+      );
+    } catch (err) {
+      logger.error('MOVERS', `NIFTY 500 movers failed: ${err.message}`);
+    }
+
+    // The NSE JSON API 404s from automation, so the benchmark line falls
+    // back to Yahoo's spark endpoint when the market providers come back
+    // empty (they do on CI).
+    let wrapSnapshots = snapshots;
+    if (!snapshots.some((s) => /^nifty(\s*50)?$/i.test(String(s.name ?? '')))) {
+      const pulse = await fetchIndexPulse();
+      if (pulse.length) {
+        logger.info('INDICES', `index pulse from Yahoo: ${pulse.map((p) => `${p.name} ${p.value}`).join(', ')}`);
+        wrapSnapshots = [...pulse, ...snapshots];
+      }
+    }
+
+    // The day's biggest story: the channel's own event store first, the
+    // market RSS feeds when the store has nothing (a cold cache must not
+    // leave the wrap without a news line).
+    let wrapEvents = events;
+    if (!wrapEvents.length) {
+      try {
+        const roundup = await fetchNewsRoundup({ now: now.getTime(), logger });
+        if (roundup.stories?.length) {
+          // The lead of the day: the best-READING headline, not just the first.
+          const story = pickLeadStory(roundup.stories) ?? roundup.stories[0];
+          wrapEvents = [
+            {
+              title: story.title,
+              source: (story.sources ?? []).join(' / ') || 'Market feed',
+              url: story.link,
+              importance_level: 'HIGH',
+              importance: 80,
+              detected_at: new Date(now.getTime()).toISOString(),
+            },
+          ];
+          logger.info('NEWS', `story from RSS fallback: ${story.title}`);
+        }
+      } catch (err) {
+        logger.warn('NEWS', `RSS news fallback failed: ${err.message}`);
+      }
+    }
+
+    wrapCtx = buildMarketWrapContext({ snapshots: wrapSnapshots, events: wrapEvents, movers, now });
+  }
+
+  // ---- image first: the card IS the post ----------------------------------
   if (visual && visualDeliver) {
     try {
-      visualResult = await visualDeliver.sendBriefing({ type: kind, snapshots, events, now, runId });
+      if (kind === 'market-wrap') {
+        // ONE image, content-sized: the channel's daily post.
+        visualResult = await visualDeliver.sendMarketWrap({ ctx: wrapCtx, now, runId });
+      } else {
+        visualResult = await visualDeliver.sendBriefing({ type: kind, snapshots, events, now, runId });
+      }
       if (visualResult.visual) {
         sent = true;
       }
@@ -144,61 +206,10 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
     }
   }
 
-  // Fallback to text briefing if visual not enabled or failed
+  // ---- text fallback (also the dry-run preview) ---------------------------
   if (!sent) {
     if (kind === 'market-wrap') {
-      // The NIFTY 500 universe and the day's % change for every member.
-      try {
-        movers = await fetchNifty500Movers({ cap: 3, now: now.getTime() });
-        logger.info(
-          'MOVERS',
-          `NIFTY 500: universe=${movers.universe} scanned=${movers.scanned} source=${movers.source} ` +
-            `gainers=${movers.gainers.length} losers=${movers.losers.length} missing=${movers.missing.length}`
-        );
-      } catch (err) {
-        logger.error('MOVERS', `NIFTY 500 movers failed: ${err.message}`);
-      }
-
-      // The NSE JSON API 404s from automation, so the benchmark line falls
-      // back to Yahoo's spark endpoint when the market providers come back
-      // empty (they do on CI).
-      let wrapSnapshots = snapshots;
-      if (!snapshots.some((s) => /^nifty(\s*50)?$/i.test(String(s.name ?? '')))) {
-        const pulse = await fetchIndexPulse();
-        if (pulse.length) {
-          logger.info('INDICES', `index pulse from Yahoo: ${pulse.map((p) => `${p.name} ${p.value}`).join(', ')}`);
-          wrapSnapshots = [...pulse, ...snapshots];
-        }
-      }
-
-      // The day's biggest story: the channel's own event store first, the
-      // market RSS feeds when the store has nothing (a cold cache must not
-      // leave the wrap without a news line).
-      let wrapEvents = events;
-      if (!wrapEvents.length) {
-        try {
-          const roundup = await fetchNewsRoundup({ now: now.getTime(), logger });
-          if (roundup.stories?.length) {
-            const story = roundup.stories[0];
-            wrapEvents = [
-              {
-                title: story.title,
-                source: (story.sources ?? []).join(' / ') || 'Market feed',
-                url: story.link,
-                importance_level: 'HIGH',
-                importance: 80,
-                detected_at: new Date(now.getTime()).toISOString(),
-              },
-            ];
-            logger.info('NEWS', `story from RSS fallback: ${story.title}`);
-          }
-        } catch (err) {
-          logger.warn('NEWS', `RSS news fallback failed: ${err.message}`);
-        }
-      }
-
-      const ctx = buildMarketWrapContext({ snapshots: wrapSnapshots, events: wrapEvents, movers, now });
-      text = formatMarketWrap(ctx, { now });
+      text = formatMarketWrap(wrapCtx, { now });
     } else {
       const ctx = kind === 'premarket'
         ? buildPreMarketContext({ snapshots, events, now })
@@ -556,7 +567,10 @@ async function main() {
 
     // ---------------------------------------------------- BRIEFING COMMAND
     if (briefing) {
-      const visualDeliver = new VisualDeliver({ transport, logger, settings, enabled: visual });
+      // `--visual` turns the image on; VISUAL_BRIEFING=true turns it on for CI.
+      // (Passing `null` lets the env decide — passing `false` would silently
+      // override the env and switch the card off in production.)
+      const visualDeliver = new VisualDeliver({ transport, logger, settings, enabled: visual ? true : null });
       const summary = await runBriefing({
         briefing,
         providers,
@@ -634,39 +648,27 @@ async function main() {
       return;
     }
 
-    // ---------------------------------------------------- MARKET CHECK (full pipeline)
+    // ---------------------------------------------------- MARKET CHECK (retired)
+    //
+    // The intraday news alerts are retired: the channel's one daily post is
+    // the post-market card (top 3 gainers, top 3 losers, the day's biggest
+    // news). A stray dispatch must not post the old alert stream again.
     if (jobType === 'market-check') {
-      const summary = await runPipeline({
-        providers,
-        settings,
-        importance: importanceEngine,
-        textOps,
-        categorizer,
-        extractor,
-        store,
-        logger,
-        ai,
-        transport,
-        mode,
-        now,
-        runId,
-        noAi: !settings.ai.enabled,
-        scheduledBriefing: mode !== 'intraday',
-        sourceRegistry,
-      });
-
+      logger.info('JOB', 'market-check retired — the intraday alert stream no longer posts');
       store.saveRun({
         run_id: runId,
         mode,
-        started_at: summary.startedAt,
-        finished_at: summary.finishedAt,
-        status: summary.status,
-        stats: summary.counts,
+        started_at: now.toISOString(),
+        finished_at: new Date().toISOString(),
+        status: 'ok',
+        stats: { retired: true },
         error: null,
       });
-
-      if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
-      else printSummary(summary, settings, mode);
+      if (args.json) {
+        process.stdout.write(
+          JSON.stringify({ runId, jobType, retired: true, sent: false }, null, 2) + '\n'
+        );
+      }
     } else {
       logger.info('JOB', `Job type "${jobType}" completed without running pipeline`);
     }

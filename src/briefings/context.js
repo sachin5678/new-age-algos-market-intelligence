@@ -256,6 +256,19 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
 }
 
 /**
+ * RSS feeds append SEO furniture to their titles ("…, Preview, earnings
+ * schedule, history, yield"). The reader wants the headline, not the furniture.
+ * Only trailing furniture is removed — a headline is never rewritten.
+ */
+export function cleanHeadline(title) {
+  let t = String(title ?? '').trim();
+  t = t.replace(/[,:|–—-]\s*preview\b.*$/i, '');
+  t = t.replace(/\s*[|]\s*(full story|full coverage|read more|full article)\s*$/i, '');
+  t = t.replace(/\s*[–—-]\s*(full story|full coverage|read more|full article)\s*$/i, '');
+  return t.trim() || String(title ?? '').trim();
+}
+
+/**
  * Context for the post-market wrap — the one message the channel posts at
  * the close of a session.
  *
@@ -291,7 +304,9 @@ export function buildMarketWrapContext({
 
   // The one story of the day: highest importance first, newest breaking the tie.
   const story = developmentsFromEvents(events, 1)[0];
-  if (story) ctx.story = story;
+  if (story) {
+    ctx.story = { ...story, headline: cleanHeadline(story.headline) };
+  }
 
   return ctx;
 }

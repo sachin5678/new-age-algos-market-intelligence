@@ -16,6 +16,12 @@ import {
   renderAlertHtml,
   renderPdfHtml,
 } from '../visual/templates.js';
+import {
+  buildMarketWrapCard,
+  renderMarketWrapCardHtml,
+  CARD_MAX_HEIGHT,
+  CARD_MIN_HEIGHT,
+} from '../visual/market-wrap-card.js';
 import { visualDimensions, VISUAL_DEFAULTS } from '../visual/theme.js';
 import {
   renderPlanPages,
@@ -152,6 +158,68 @@ export class VisualDeliver {
       }
       throw err;
     }
+  }
+
+  /**
+   * Send the post-market card — ONE image, the channel's daily post.
+   *
+   * The card carries the benchmark line, the day's top 3 gainers and top 3
+   * losers from the NIFTY 500 and the single biggest news of the day. It is
+   * content-sized: a quiet day renders a shorter card instead of a slab of
+   * empty background. A render failure never sends a broken image — the
+   * caller falls back to the text wrap.
+   */
+  async sendMarketWrap({ ctx, now, runId }) {
+    if (!this.enabled) {
+      this.logger?.info('VISUAL', 'disabled — skipping the market-wrap card');
+      return { visual: false };
+    }
+
+    const card = buildMarketWrapCard(ctx, { now });
+
+    try {
+      const dims = { width: VISUAL_DEFAULTS.width, height: CARD_MAX_HEIGHT, scale: VISUAL_DEFAULTS.scale };
+      const pngResult = await renderFittedPng({
+        renderHtml: (d) => renderMarketWrapCardHtml(card, d),
+        dims,
+        scale: VISUAL_DEFAULTS.scale,
+        min: CARD_MIN_HEIGHT,
+        max: CARD_MAX_HEIGHT,
+        pageStep: VISUAL_DEFAULTS.pageStep,
+      });
+      const { buffer, width, height, html } = pngResult;
+      const pngQA = validateImage({ buffer, width, height, html });
+      if (!pngQA.ok) {
+        throw new RenderError(`Market-wrap card QA failed: ${pngQA.problems.join('; ')}`);
+      }
+
+      const pngPath = saveVisual({ buffer, type: 'market-wrap', now, ext: 'png' });
+      this.logger?.info(
+        'VISUAL',
+        `Market-wrap card saved: ${pngPath} ${width}×${height} (${buffer.length} bytes, ${pngResult.ms}ms)`
+      );
+
+      if (!this.dryRun) {
+        const caption = this.buildMarketWrapCaption(card);
+        await this.transport.sendPhoto(pngPath, caption, { mode: 'market-wrap', runId });
+        this.logger?.info('VISUAL', 'Market-wrap card sent via transport');
+      } else {
+        this.logger?.info('VISUAL', `DRY_RUN — market-wrap card ready: ${pngPath}`);
+      }
+
+      return { visual: true, pngPath, width, height, card };
+    } catch (err) {
+      if (err instanceof RenderError) {
+        this.logger?.error('VISUAL', `Card render failed — falling back to text: ${err.message}`);
+        return { visual: false, renderError: err.message };
+      }
+      throw err;
+    }
+  }
+
+  /** One-line caption for the market-wrap card. */
+  buildMarketWrapCaption(card) {
+    return `Market Wrap • ${card.date} • ${card.time}`;
   }
 
   /** Send a breaking alert as 1080×1080 image. */
