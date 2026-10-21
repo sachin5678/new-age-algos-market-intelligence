@@ -152,7 +152,11 @@ jobs:
           test_id=$(curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getMe" | jq -r .result.id)
           echo "test bot id: ${test_id}  chat: ${TEST_CHAT_ID}"
           echo "--- 0. what can the production bot do there? ---"
-          curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getChatAdministrators?chat_id=${TEST_CHAT_ID}" | jq -c '.result[] | {user: .user.username, status: .status, rights: .can_post_messages, invite: .can_invite_users, promote: .can_promote_members, admin: .is_admin}' || true
+          curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getChatAdministrators?chat_id=${TEST_CHAT_ID}" | jq -c '.result[] | {user: .user.username, status: .status, post: .can_post_messages, invite: .can_invite_users, promote: .can_promote_members}' || true
+          echo "--- 0b. can the production bot still post there? ---"
+          curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/sendMessage" \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\":${TEST_CHAT_ID},\"text\":\"(probe) production bot rights check\"}" | jq -c '{ok, error: .description, message_id: .result.message_id}' || true
           echo "--- 1. bot-created invite link (the production bot is an admin there) ---"
           link=$(curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/createChatInviteLink" \
             -H 'Content-Type: application/json' -d "{\"chat_id\":${TEST_CHAT_ID}}" | tee /dev/stderr | jq -r '.result.invite_link // empty')
