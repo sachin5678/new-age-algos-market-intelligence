@@ -62,13 +62,15 @@ jobs:
       # repo secrets and the health-check keep working.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
-      # The TEST group is posted by the dedicated test bot
-      # (@newagealgos_test_bot); production uses the channel bot. Only an
-      # explicit target=live reaches production.
+      # The TEST target is posted by the dedicated testing bot
+      # (@newagealgos_test_bot) into the testing group; production uses the
+      # channel bot and the production chat. Only an explicit target=live
+      # reaches production.
       TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_TEST_BOT_TOKEN }}
       # Guard rail: target=live is the ONLY thing that reaches production, and it
-      # must be written explicitly in the cron-job.org job body. Omitted/test -> test group.
-      TELEGRAM_CHAT_ID: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || '-1004497477393' }}
+      # must be written explicitly in the cron-job.org job body. Omitted/test ->
+      # the testing bot's group.
+      TELEGRAM_CHAT_ID: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || secrets.TELEGRAM_TEST_CHAT_ID }}
       NODE_ENV: production
 
     steps:
@@ -136,26 +138,27 @@ jobs:
         run: node src/index.js --mode premarket --briefing premarket
 
       # One-off provisioning: give the dedicated TEST bot the right to post in
-      # the test channel. promoteChatMember is also the "add a bot as a channel
-      # admin" call — Telegram refuses to add a bot to a broadcast channel any
-      # other way (channels.inviteToChannel -> USER_BOT). Safe to re-run.
+      # the testing group. The testing group is a supergroup, so the bot can
+      # join it through the invite link the group owner exports. Safe to
+      # re-run.
       - name: Provision test bot
         if: ${{ github.event.inputs.job_type == 'setup-test-bot' }}
         env:
           PROD_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TEST_BOT_TOKEN: ${{ secrets.TELEGRAM_TEST_BOT_TOKEN }}
-          TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID || '-1004497477393' }}
+          TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID }}
         run: |
           set -euo pipefail
           test_id=$(curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getMe" | jq -r .result.id)
-          echo "test bot id: ${test_id}"
-          echo "--- promote (also adds it as a member when needed) ---"
+          echo "test bot id: ${test_id}  chat: ${TEST_CHAT_ID}"
+          echo "--- membership ---"
+          curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getChat?chat_id=${TEST_CHAT_ID}" | jq -c '{ok, title: .result.title, type: .result.type}'
+          echo "--- promote so it can post ---"
           curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/promoteChatMember" \
             -H 'Content-Type: application/json' \
-            -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id},\"can_post_messages\":true,\"can_manage_chat\":false,\"can_delete_messages\":false,\"can_restrict_members\":false,\"can_promote_members\":false,\"can_change_info\":false,\"can_invite_users\":false,\"can_pin_messages\":false,\"is_anonymous\":false}"
+            -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id},\"can_post_messages\":true,\"can_manage_chat\":false,\"can_delete_messages\":false,\"can_restrict_members\":false,\"can_promote_members\":false,\"can_change_info\":false,\"can_invite_users\":false,\"can_pin_messages\":false,\"is_anonymous\":false}" || true
           echo
-          echo "--- verify ---"
-          curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getChat?chat_id=${TEST_CHAT_ID}" | jq -c '{ok, title: .result.title, id: .result.id}'
+          echo "--- ping ---"
           curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/sendMessage" \
             -H 'Content-Type: application/json' \
             -d "{\"chat_id\":${TEST_CHAT_ID},\"text\":\"🤖 Test bot online — test messages land here from now on.\"}"
