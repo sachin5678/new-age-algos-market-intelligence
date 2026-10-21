@@ -44,10 +44,15 @@ SpaceX Q3 2026 results: Shares jump 8% in pre-market after $4.4 billion profit�
 ━━━━━━━━━━━━━━━━━━━━━━
 🔥 TOP MOVERS NIFTY 500
 🟢 INDIACEM: +12.04% — India Cements Ltd.
+
 🟢 LTTS: +10.66% — L&T Technology Services Ltd.
+
 🟢 FRACTAL: +10.15% — Fractal Analytics Ltd.
+
 🔴 BIRET: -17.65% — Brookfield India Real Estate Trust
+
 🔴 EMBASSY: -15.04% — EMBASSY OFFICE PARKS REIT
+
 🔴 HSCL: -10.99% — Himadri Speciality Chemical Ltd.
 
 ⚡ NEW AGE ALGOS · Data-driven • Systematic · Transparent · Not investment advice
@@ -148,14 +153,28 @@ console, which POSTs `workflow_dispatch`:
 
 | Job | cron-job.org job id | cron-job.org schedule | `job_type` |
 |---|---|---|---|
-| **Post-market card** | `8581624` | `15 10 * * 1-5` (15:45 IST) | `market-wrap` |
+| **Post-market wrap** | `8581624` | `15 10 * * 1-5` (15:45 IST) | `market-wrap` |
 | Pre-market briefing | `8581622` | `0 3 * * 1-5` (08:30 IST) | `premarket` — **retired, disabled, posts nothing** |
 | Market check (intraday alerts) | `8581623` | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` — **retired, disabled, posts nothing** |
 
 Two structures are retired: the pre-market summary and the intraday news
-alert stream. The channel's ONE daily post is the post-market card. Both cron
+alert stream. The channel's ONE daily post is the post-market wrap. Both cron
 jobs are disabled **and** the CLI no-ops them, so a stale dispatch can never
 post the old format again.
+
+**Production vs test — two bots, two chats**
+
+| | bot | chat | secret |
+|---|---|---|---|
+| `target=live` | the channel bot | the production channel | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| anything else | **@newagealgos_test_bot** | *New Age Algos Test — Bot* (supergroup) | `TELEGRAM_TEST_BOT_TOKEN`, `TELEGRAM_TEST_CHAT_ID` |
+
+The test bot has its own group on purpose: Telegram refuses to add a bot to a
+broadcast channel programmatically (`channels.inviteToChannel` → `USER_BOT`),
+and a supergroup member may post while a channel may not. The test group is
+also where the format changes get tried before anything reaches the live
+channel. The `setup-test-bot` job type re-provisions the bot if it is ever
+removed from the group.
 
 Each job POSTs to
 `/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches`
