@@ -173,7 +173,7 @@ export function buildPreMarketContext({ snapshots = [], events = [], now = new D
  * line — the same way "Bank Nifty" leaked, because it does not start with
  * "nifty".
  */
-function indexRows(snaps) {
+export function indexRows(snaps) {
   return [
     findSnap(snaps, /^nifty(\s*50)?$/i),
     findSnap(snaps, /bank\s*nifty|nifty\s*bank/i),
@@ -252,5 +252,46 @@ export function buildClosingContext({ snapshots = [], events = [], now = new Dat
   if (watchNext.length) ctx.watchNext = watchNext.slice(0, 6);
   const view = viewFromEvents(events, 3);
   if (view) ctx.view = view;
+  return ctx;
+}
+
+/**
+ * Context for the post-market wrap — the one message the channel posts at
+ * the close of a session.
+ *
+ * The reader asked for three things and nothing else: the day's top 3
+ * gainers and top 3 losers from the NIFTY 500, plus the single biggest news
+ * of the day. Everything else the old closing digest carried (breadth,
+ * sectors, FII/DII flows, global cues, tomorrow's calendar, the AI view) is
+ * deliberately not in here.
+ *
+ * `movers` is the ranked NIFTY 500 result (see src/market/nifty500.js);
+ * `events` are the channel's own news events, from which the single biggest
+ * story of the day is picked.
+ */
+export function buildMarketWrapContext({
+  snapshots = [],
+  events = [],
+  movers = { gainers: [], losers: [] },
+  now = new Date(),
+} = {}) {
+  const ctx = { date: undefined, now };
+
+  const idx = indexRows(snapshots);
+  if (idx.length) ctx.indices = idx;
+
+  const gainers = (movers.gainers ?? [])
+    .filter((m) => m && typeof m.pct === 'number')
+    .slice(0, 3);
+  const losers = (movers.losers ?? [])
+    .filter((m) => m && typeof m.pct === 'number')
+    .slice(0, 3);
+  if (gainers.length) ctx.gainers = gainers;
+  if (losers.length) ctx.losers = losers;
+
+  // The one story of the day: highest importance first, newest breaking the tie.
+  const story = developmentsFromEvents(events, 1)[0];
+  if (story) ctx.story = story;
+
   return ctx;
 }

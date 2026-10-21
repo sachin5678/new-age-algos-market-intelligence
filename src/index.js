@@ -14,8 +14,12 @@ import { runProviders } from './providers/base.js';
 import { runPipeline } from './pipeline.js';
 import { createPoller } from './scheduler/index.js';
 import { createSourceRegistry } from './normalize/sources.js';
-import { buildPreMarketContext, buildClosingContext } from './briefings/context.js';
+import { buildPreMarketContext, buildClosingContext, buildMarketWrapContext } from './briefings/context.js';
 import { formatPreMarketDigest, formatClosingDigest } from './telegram/briefing-digest.js';
+import { formatMarketWrap } from './telegram/market-wrap.js';
+import { fetchNifty500Movers } from './market/nifty500.js';
+import { fetchIndexPulse } from './market/indices.js';
+import { fetchNewsRoundup } from './short/news.js';
 import { chunkMessage } from './telegram/format.js';
 import { labelChunks } from './telegram/theme.js';
 import { VisualDeliver } from './visual/deliver.js';
@@ -25,10 +29,13 @@ const USAGE = `New Age Algos — market intelligence pipeline
 Usage: node src/index.js [options]
 
 Options:
-  --mode <m>           intraday (default) | premarket | closing
+  --mode <m>           intraday (default) | premarket | closing | market-wrap
   --job-type <t>       market-check (default) | market-news | health-check
   --briefing <b>       Render a scheduled briefing instead of the event pipeline:
-                       premarket | closing (uses snapshots + recent store events)
+                       market-wrap (the post-market wrap — top 3 gainers, top 3
+                       losers from the NIFTY 500 and the day's biggest news);
+                       closing (alias of market-wrap); premarket (retired, sends
+                       nothing)
   --visual             Generate and send visual briefing (PNG + optional PDF)
   --dry-run            Force DRY_RUN (print message, send nothing)
   --send               Allow real Telegram delivery (DRY_RUN=false)
@@ -77,16 +84,45 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   const startedAt = now.toISOString();
   const kind = briefing;
 
+  // The pre-market summary was retired: the channel now posts one post-market
+  // wrap (movers + the day's news) and nothing before the open. A stale
+  // dispatch must never post the old format again.
+  if (kind === 'premarket') {
+    logger.info('BRIEFING', 'pre-market briefing retired — nothing is sent (see --briefing market-wrap)');
+    const summary = {
+      runId,
+      kind,
+      retired: true,
+      dryRun: Boolean(settings.dryRun),
+      snapshots: 0,
+      eventsConsidered: 0,
+      messageLength: 0,
+      sent: false,
+      sendError: null,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      text: '',
+    };
+    store.saveRun({
+      run_id: runId,
+      mode: kind,
+      started_at: startedAt,
+      finished_at: summary.finishedAt,
+      status: 'ok',
+      stats: { retired: true },
+      error: null,
+    });
+    return summary;
+  }
+
   // Collect only market/global providers — briefings don't need news feeds.
   const briefingProviders = providers.filter((p) => ['market', 'global'].includes(p.kind));
   const collected = await runProviders(briefingProviders, { logger, mode: kind, now }, logger);
   const snapshots = collected.items.filter((i) => i?.kind === 'snapshot').map((i) => i.snapshot ?? i);
 
-  // Lookback feeds the RELEVANCE window, not a freshness cut: pre-market needs
-  // last night AND the previous session AND anything still unresolved, so it
-  // reads wider than the intraday window (PART 10/25/30). selectStories() then
-  // decides what is actually still worth showing.
-  const hours = kind === 'premarket' ? 96 : 96;
+  // Lookback feeds the RELEVANCE window, not a freshness cut: the wrap needs
+  // the day's biggest story, which may have broken before the open.
+  const hours = kind === 'premarket' ? 96 : 24;
   const since = new Date(now.getTime() - hours * 3600 * 1000).toISOString();
   const events = store.listRecentEvents(since, 150);
 
@@ -94,6 +130,7 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
   let text = '';
   let sent = false;
   let sendError = null;
+  let movers = { gainers: [], losers: [], scanned: 0, universe: 0, source: 'none' };
 
   // If visual enabled, render and send image (+ optional PDF)
   if (visual && visualDeliver) {
@@ -109,12 +146,67 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
 
   // Fallback to text briefing if visual not enabled or failed
   if (!sent) {
-    const ctx = kind === 'premarket'
-      ? buildPreMarketContext({ snapshots, events, now })
-      : buildClosingContext({ snapshots, events, now });
-    // Single 10–12 line digest, not the 40–70 line long-form report: the long
-    // form only ever reached readers as 5–7 separate page images.
-    text = kind === 'premarket' ? formatPreMarketDigest(ctx, { now }) : formatClosingDigest(ctx, { now });
+    if (kind === 'market-wrap') {
+      // The NIFTY 500 universe and the day's % change for every member.
+      try {
+        movers = await fetchNifty500Movers({ cap: 3, now: now.getTime() });
+        logger.info(
+          'MOVERS',
+          `NIFTY 500: universe=${movers.universe} scanned=${movers.scanned} source=${movers.source} ` +
+            `gainers=${movers.gainers.length} losers=${movers.losers.length} missing=${movers.missing.length}`
+        );
+      } catch (err) {
+        logger.error('MOVERS', `NIFTY 500 movers failed: ${err.message}`);
+      }
+
+      // The NSE JSON API 404s from automation, so the benchmark line falls
+      // back to Yahoo's spark endpoint when the market providers come back
+      // empty (they do on CI).
+      let wrapSnapshots = snapshots;
+      if (!snapshots.some((s) => /^nifty(\s*50)?$/i.test(String(s.name ?? '')))) {
+        const pulse = await fetchIndexPulse();
+        if (pulse.length) {
+          logger.info('INDICES', `index pulse from Yahoo: ${pulse.map((p) => `${p.name} ${p.value}`).join(', ')}`);
+          wrapSnapshots = [...pulse, ...snapshots];
+        }
+      }
+
+      // The day's biggest story: the channel's own event store first, the
+      // market RSS feeds when the store has nothing (a cold cache must not
+      // leave the wrap without a news line).
+      let wrapEvents = events;
+      if (!wrapEvents.length) {
+        try {
+          const roundup = await fetchNewsRoundup({ now: now.getTime(), logger });
+          if (roundup.stories?.length) {
+            const story = roundup.stories[0];
+            wrapEvents = [
+              {
+                title: story.title,
+                source: (story.sources ?? []).join(' / ') || 'Market feed',
+                url: story.link,
+                importance_level: 'HIGH',
+                importance: 80,
+                detected_at: new Date(now.getTime()).toISOString(),
+              },
+            ];
+            logger.info('NEWS', `story from RSS fallback: ${story.title}`);
+          }
+        } catch (err) {
+          logger.warn('NEWS', `RSS news fallback failed: ${err.message}`);
+        }
+      }
+
+      const ctx = buildMarketWrapContext({ snapshots: wrapSnapshots, events: wrapEvents, movers, now });
+      text = formatMarketWrap(ctx, { now });
+    } else {
+      const ctx = kind === 'premarket'
+        ? buildPreMarketContext({ snapshots, events, now })
+        : buildClosingContext({ snapshots, events, now });
+      // Single 10–12 line digest, not the 40–70 line long-form report: the long
+      // form only ever reached readers as 5–7 separate page images.
+      text = kind === 'premarket' ? formatPreMarketDigest(ctx, { now }) : formatClosingDigest(ctx, { now });
+    }
 
     try {
       for (const chunk of labelChunks(chunkMessage(text, 4096))) {
@@ -136,6 +228,13 @@ async function runBriefing({ briefing, providers, store, transport, logger, sett
     pdfPath: visualResult.pdfPath ?? null,
     snapshots: snapshots.length,
     eventsConsidered: events.length,
+    movers: {
+      universe: movers.universe ?? 0,
+      scanned: movers.scanned ?? 0,
+      source: movers.source ?? 'none',
+      gainers: (movers.gainers ?? []).map((g) => `${g.symbol} ${g.pct.toFixed(2)}%`),
+      losers: (movers.losers ?? []).map((l) => `${l.symbol} ${l.pct.toFixed(2)}%`),
+    },
     messageLength: text.length,
     sent,
     sendError,
@@ -160,11 +259,21 @@ function printBriefingSummary(summary, settings) {
     '',
     `BRIEFING ${summary.runId}  kind=${summary.kind}  dryRun=${summary.dryRun}`,
     `  snapshots=${summary.snapshots} recentEvents=${summary.eventsConsidered} messageLength=${summary.messageLength}`,
+  ];
+  if (summary.movers) {
+    lines.push(
+      `  movers: universe=${summary.movers.universe} scanned=${summary.movers.scanned} source=${summary.movers.source}` +
+        (summary.movers.gainers?.length ? ` | gainers: ${summary.movers.gainers.join(', ')}` : '') +
+        (summary.movers.losers?.length ? ` | losers: ${summary.movers.losers.join(', ')}` : '')
+    );
+  }
+  if (summary.retired) lines.push('  retired: the pre-market briefing no longer posts');
+  lines.push(
     `  sent=${summary.sent}${summary.sendError ? ` error=${summary.sendError}` : ''}`,
     '',
     summary.text,
     '',
-  ];
+  );
   process.stdout.write(lines.join('\n') + '\n');
 }
 
@@ -390,7 +499,7 @@ async function main() {
   if (args['no-ai']) settings.ai.enabled = false;
 
   const mode = args.mode;
-  if (!['intraday', 'premarket', 'closing'].includes(mode)) {
+  if (!['intraday', 'premarket', 'closing', 'market-wrap'].includes(mode)) {
     process.stderr.write(`Unknown mode: ${mode}\n\n${USAGE}`);
     process.exit(2);
   }
@@ -399,9 +508,12 @@ async function main() {
     process.stderr.write(`Unknown job-type: ${jobType}\n\n${USAGE}`);
     process.exit(2);
   }
-  const briefing = args.briefing ?? null;
-  if (briefing && !['premarket', 'closing'].includes(briefing)) {
-    process.stderr.write(`Unknown briefing: ${briefing}\n\n${USAGE}`);
+  // "closing" is an alias of "market-wrap": one post-market message, whichever
+  // name the scheduler still uses.
+  const briefingRaw = args.briefing ?? null;
+  const briefing = briefingRaw === 'closing' ? 'market-wrap' : briefingRaw;
+  if (briefing && !['market-wrap', 'premarket'].includes(briefing)) {
+    process.stderr.write(`Unknown briefing: ${briefingRaw}\n\n${USAGE}`);
     process.exit(2);
   }
   const poll = Boolean(args.poll);
@@ -411,7 +523,7 @@ async function main() {
   }
   const visual = Boolean(args.visual);
   if (visual && !briefing) {
-    process.stderr.write(`--visual only works with --briefing premarket|closing\n\n${USAGE}`);
+    process.stderr.write(`--visual only works with --briefing market-wrap|closing\n\n${USAGE}`);
     process.exit(2);
   }
 
