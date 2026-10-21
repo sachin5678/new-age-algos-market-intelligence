@@ -12,16 +12,59 @@ source hierarchy, structured JSON verdict, wire-format alerts and scheduled brie
 cd E:\Desktop\YT\new-age-algos
 npm test                 # unit tests (no network)
 npm start                # intraday run, DRY_RUN from settings/.env (prints message)
-node src/index.js --mode premarket --dry-run
 node src/index.js --no-ai                    # rules-only (no OpenAI calls)
-node src/index.js --briefing premarket --dry-run   # render the pre-market brief
-node src/index.js --briefing closing --dry-run     # render the closing brief
+node src/index.js --briefing market-wrap --dry-run   # render the post-market wrap
+node src/index.js --briefing closing --dry-run       # alias of market-wrap
 ```
+
+## The post-market wrap (what the channel posts)
+
+One message after the close, and nothing before the open:
+
+```
+🌙 NEW AGE ALGOS — POST-MARKET 21 Oct 2026 • 15:45 IST
+
+📈 NIFTY 50 22,677.35 (-0.92%) • NIFTY BANK 54,780.6 (-1.28%) • SENSEX 73,318.17 (-0.72%)
+
+🟢 TOP GAINERS NIFTY 500
+1. LTTS +10.15% — L&T Technology Services Ltd. @ ₹3,978
+2. INDIACEM +10.04% — India Cements Ltd. @ ₹323.9
+3. FRACTAL +8.90% — Fractal Analytics Ltd. @ ₹776.95
+
+🔴 TOP LOSERS NIFTY 500
+1. BIRET -17.65% — Brookfield India Real Estate Trust @ ₹263.49
+2. EMBASSY -15.04% — EMBASSY OFFICE PARKS REIT @ ₹369.92
+3. HSCL -11.41% — Himadri Speciality Chemical Ltd. @ ₹536.75
+
+📰 BIGGEST NEWS
+Gold may test 4,000-mark if oil extends rally; US Fed moves eyed: Kotak Neo — Business Standard
+```
+
+| Piece | Where |
+|---|---|
+| Renderer (one message, escaped, nothing invented) | `src/telegram/market-wrap.js` |
+| Context (benchmark line, 3 + 3 movers, the day's story) | `buildMarketWrapContext()` in `src/briefings/context.js` |
+| NIFTY 500 universe + day % change | `src/market/nifty500.js` |
+| NIFTY 50 / NIFTY BANK / SENSEX pulse (fallback) | `src/market/indices.js` |
+| The story of the day | the channel's event store first, market RSS feeds when the store is cold |
+
+**Where the numbers come from**
+
+- **Constituents** — the live NIFTY 500 list from the NSE archive CSV
+  (`nsearchives.nseindia.com/.../ind_nifty500list.csv`). The NSE *JSON* API
+  404s from automation, so the archive CSV is the endpoint that works.
+  `config/nifty500.json` is the bundled fallback if the fetch fails.
+- **Day % change** — Yahoo's public `spark` endpoint, 20 symbols per request
+  (30+ is rejected with HTTP 400), in four parallel chunks. Whatever a chunk
+  misses is filled in with the per-symbol `chart` endpoint.
+- **Stale quotes never reach the reader** — a bar older than four days is
+  dropped, a symbol with no price is skipped, and a run that saw fewer than
+  100 constituents falls back to the bundled list.
 
 ## Layout
 
 ```
-config/          feeds, categories, importance rules, entity dictionaries, source hierarchy, thresholds
+config/          feeds, categories, importance rules, entity dictionaries, source hierarchy, thresholds, nifty500.json
 src/
   providers/     MarketData / News / OfficialAnnouncement / GlobalMarket providers (independent, failure-isolated)
   normalize/     article normalization, category classification, entity extraction, source-tier registry
@@ -29,6 +72,7 @@ src/
   events/        hashing + NEW/UPDATED/DUPLICATE/KNOWN detection
   importance/    configurable HIGH/MEDIUM/LOW classification
   ai/            analyst system prompt (src/ai/prompt.js) + OpenAI service (structured JSON; never sends messages)
+  market/        NIFTY 500 universe + day movers, index pulse (the post-market wrap's data stage)
   briefings/     briefing context assembly (snapshots + store events → template context)
   publish/       shouldPublish() decision gates
   telegram/      alert + briefing formatting, transports (dry-run / JSON emit / gramjs later)
@@ -67,7 +111,7 @@ one-shot job: collect → detect → format → send → persist state.
 | Workflow | Trigger | Times |
 |---|---|---|
 | `market-intelligence.yml` | `workflow_dispatch` only — called by **cron-job.org** | see the cron-job.org jobs below |
-| `market-intelligence-external.yml` | `repository_dispatch` (`market-check`, `premarket`, `closing`, `market-news`, `health-check`) | on demand — optional alternative path; also `target`-guarded |
+| `market-intelligence-external.yml` | `repository_dispatch` (`market-check`, `market-wrap`, `closing`, `premarket`, `market-news`, `health-check`) | on demand — optional alternative path; also `target`-guarded |
 | `ci.yml` | push / PR | tests + Docker image to `ghcr.io` |
 
 **Scheduling: cron-job.org, not GitHub's scheduler**
@@ -75,14 +119,18 @@ one-shot job: collect → detect → format → send → persist state.
 GitHub's `schedule:` trigger was removed on purpose — it never fired for this
 account (0 runs in 26h, including a `*/5 * * * *` probe), and when it did fire
 for this account it ran **hours late**, which for a market briefing means stale
-content posted as if fresh. The three schedules now live in the cron-job.org
+content posted as if fresh. The schedules now live in the cron-job.org
 console, which POSTs `workflow_dispatch`:
 
-| Job | cron-job.org schedule | `job_type` |
-|---|---|---|
-| Pre-market briefing | `0 3 * * 1-5` (08:30 IST) | `premarket` |
-| Market check | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` |
-| Closing briefing | `15 10 * * 1-5` (15:45 IST) | `closing` |
+| Job | cron-job.org job id | cron-job.org schedule | `job_type` |
+|---|---|---|---|
+| **Post-market wrap** | `8581624` | `15 10 * * 1-5` (15:45 IST) | `market-wrap` |
+| Pre-market briefing | `8581622` | `0 3 * * 1-5` (08:30 IST) | `premarket` — **retired, disabled, posts nothing** |
+| Market check | `8581623` | `*/5 3-10 * * 1-5` (every 5 min, 09:15–15:30 IST) | `market-check` (currently disabled) |
+
+The pre-market summary was retired: the channel posts ONE message after the
+close. The cron job is disabled **and** the CLI no-ops the `premarket` briefing,
+so a stale dispatch can never post the old format again.
 
 Each job POSTs to
 `/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches`
@@ -136,7 +184,7 @@ through `actions/cache`, so dedupe, cooldowns and the event graph persist.
 Manual run (posts to the **test group** unless `target=live`):
 
 ```bash
-gh workflow run market-intelligence.yml -f job_type=closing -f dry_run=false
+gh workflow run market-intelligence.yml -f job_type=market-wrap -f dry_run=false
 ```
 
 External cron POST (the form cron-job.org uses — note `target`, not `event_type`):
@@ -375,12 +423,13 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 
 ### Production behaviour (GitHub Actions)
 
-- Scheduled briefings run the **text digest** — one message of 10–12 lines
-  (`src/telegram/briefing-digest.js`). The image path sent one `sendPhoto` per
-  page, so a briefing reached readers as 5–7 separate posts twice a day.
+- The only scheduled channel post is the **post-market wrap** — ONE text message
+  (`src/telegram/market-wrap.js`): the benchmark line, the day's top 3 gainers
+  and top 3 losers from the NIFTY 500, and the single biggest news of the day.
+  The pre-market summary and the old multi-section closing digest are retired.
 - Intraday alerts are **formatted text** too (`VISUAL_ALERTS` off) — one message
   per story, no image download, no render step that can fail.
-- Images are opt-in: `--visual` on the pre-market/closing command, or
+- Images are opt-in: `--visual` on the briefing command, or
   `VISUAL_ALERTS=true`. Both remain supported; only the scheduled default moved.
 - `VISUAL_PDF` stays `false` — PNG only when images are enabled.
 - Target chat comes from the `TELEGRAM_CHAT_ID` secret — production points at the main channel **@newagealgos** (`-1003067155583`); the bot must be an admin with *Post messages*
