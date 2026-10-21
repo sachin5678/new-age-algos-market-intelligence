@@ -571,6 +571,7 @@ async function main() {
       // (Passing `null` lets the env decide — passing `false` would silently
       // override the env and switch the card off in production.)
       const visualDeliver = new VisualDeliver({ transport, logger, settings, enabled: visual ? true : null });
+      const visualOn = visual || visualDeliver.enabled;
       const summary = await runBriefing({
         briefing,
         providers,
@@ -580,7 +581,7 @@ async function main() {
         settings,
         now,
         runId,
-        visual,
+        visual: visualOn,
         visualDeliver,
       });
       if (args.json) process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
