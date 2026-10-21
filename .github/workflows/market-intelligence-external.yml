@@ -68,7 +68,7 @@ jobs:
             # Retired: the intraday alert stream no longer posts.
             node src/index.js --mode intraday --job-type market-check
           elif [ "$JOB_TYPE" = "market-wrap" ] || [ "$JOB_TYPE" = "closing" ]; then
-            VISUAL_BRIEFING=true node src/index.js --mode closing --briefing market-wrap ${{ env.NO_AI_FLAG }}
+            VISUAL_BRIEFING=false node src/index.js --mode closing --briefing market-wrap ${{ env.NO_AI_FLAG }}
           elif [ "$JOB_TYPE" = "premarket" ]; then
             # Retired: the pre-market summary no longer posts. The step stays so
             # a stale dispatch fails loudly instead of posting the old format.

@@ -1,129 +1,125 @@
 /**
- * Post-market wrap — the one message the channel posts at the end of a
- * session.
+ * The post-market wrap — the channel's daily post, in Telegram text.
  *
- * The reader asked for exactly this and nothing else:
- *   - the day's top 3 gainers (NIFTY 500)
- *   - the day's top 3 losers (NIFTY 500)
- *   - the single biggest news of the day
+ * The layout follows the market-closing-wrap format readers already know:
  *
- * A pre-market summary and the old multi-section closing digest are gone.
- * What is left is one message a trader can read on a phone in ten seconds:
- * what moved, and why it moved.
+ *   🇮🇳 MARKET CLOSING WRAP | 21 OCT 2026
+ *   📉 NIFTY 50 FALLS 78 POINTS | INDIACEM LEADS THE TAPE
+ *   ◆ NIFTY 50: 22,811.35  🟢 -0.34%
+ *   ──────────────
+ *   📊 KEY HIGHLIGHTS
+ *   ──────────────
+ *   📰 BIGGEST NEWS
+ *   ──────────────
+ *   🔥 TOP MOVERS · NIFTY 500
  *
  * Rules inherited from the rest of the product:
  *   - a section with no data is OMITTED, never fabricated;
  *   - every dynamic string is escaped before it reaches a Telegram tag;
  *   - the message is ONE message (never chunked into "part 1 of 2").
+ *
+ * The numbers come from src/briefings/wrap.js — the same derivation the card
+ * uses, so the two can never disagree.
  */
 
-import { SEP, esc, trimText, fmtDate, fmtTime } from './theme.js';
-
-/** Content lines a wrap may use (header + 3 + 3 + news + brand). */
-export const WRAP_MAX_LINES = 16;
+import { esc } from './theme.js';
+import { buildWrapData } from '../briefings/wrap.js';
 
 /** Telegram's hard limit for one message. */
 const MESSAGE_LIMIT = 4096;
 
-/** "24,812.35" in the Indian format. */
-function fmtPrice(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
-  return n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
-}
+/** A section rule, the same hairline the card draws. */
+const RULE = '━━━━━━━━━━━━━━━━━━━━━━';
+
+/** "22,811.35" in the Indian format. */
+const fmtIndex = (v) =>
+  Number.isFinite(Number(v))
+    ? Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '—';
 
 /** "+10.06%" / "-17.65%". */
-function fmtPct(pct) {
-  const n = Number(pct);
-  if (!Number.isFinite(n)) return '—';
-  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
-}
+const fmtPct = (p) =>
+  Number.isFinite(Number(p)) ? `${Number(p) > 0 ? '+' : ''}${Number(p).toFixed(2)}%` : '—';
 
-/** "NIFTY 50 24,812.35 (-0.42%)" from a structured index row. */
-function indexCell(row) {
-  const value = fmtPrice(row.value);
-  const pct = typeof row.pct_change === 'number' ? row.pct_change : null;
-  const pctTxt = pct == null ? '' : ` (${pct > 0 ? '+' : ''}${pct.toFixed(2)}%)`;
-  return `${esc(String(row.name ?? '').toUpperCase())} ${value}${pctTxt}`;
-}
+/** The direction dot: green up, red down, white flat. */
+const dot = (p) => (Number(p) > 0 ? '🟢' : Number(p) < 0 ? '🔴' : '⚪');
 
-/**
- * "1. INDIACEM +10.06% — India Cements Ltd. @ ₹323.95"
- *
- * The symbol carries the trade, the percentage carries the move, the name
- * tells the reader which company it is and the price anchors it.
- */
-function moverLine(mover, n) {
-  const symbol = esc(String(mover.symbol ?? '').toUpperCase());
-  const pct = esc(fmtPct(mover.pct));
-  const name = esc(trimText(String(mover.name ?? ''), 38));
-  const price = esc(fmtPrice(mover.price));
-  const tail = name ? ` — ${name}` : '';
-  return `${n}. <b>${symbol}</b> ${pct}${tail} @ ₹${price}`;
-}
+/** The emoji that opens the session headline. */
+const headEmoji = (headline) =>
+  headline.includes('FALLS') ? '📉' : headline.includes('GAINS') ? '📈' : '📊';
 
-/** The single biggest story: headline, why it matters, source. */
-function newsLine(story) {
-  if (!story) return null;
-  const headline = esc(trimText(String(story.headline ?? story.t ?? ''), 120));
-  if (!headline) return null;
-  const parts = [`<b>${headline}</b>`];
+/** "◆ NIFTY 50: 22,811.35  🟢 -0.34%" */
+const indexRow = (i) =>
+  `◆ ${esc(String(i.name ?? '').toUpperCase())}: ${esc(fmtIndex(i.value))}  ${dot(i.pct_change)} ${esc(fmtPct(i.pct_change))}`;
 
-  const why = esc(trimText(String(story.relevance ?? ''), 90));
-  if (why) parts.push(why);
+/** "• NIFTY 50 closed 0.34% lower at 22,811.35" */
+const highlightRow = (h) => `• ${esc(h)}`;
 
+/** "🟢 INDIACEM: +12.04% — India Cements Ltd." */
+const moverRow = (m) =>
+  `${dot(m.pct)} ${esc(String(m.symbol ?? '').toUpperCase())}: ${esc(fmtPct(m.pct))} — ${esc(String(m.name ?? ''))}`;
+
+/** The story: headline, why it matters, source. */
+function storyBlock(story) {
+  if (!story || !story.headline) return null;
+  const lines = [`<b>${esc(story.headline)}</b>`];
+  if (story.why) lines.push(esc(story.why));
   if (story.source) {
-    const link = story.url
-      ? `<a href="${esc(String(story.url))}">${esc(String(story.source))}</a>`
-      : esc(String(story.source));
-    parts.push(link);
+    lines.push(
+      story.url
+        ? `— <a href="${esc(story.url)}">${esc(story.source)}</a>`
+        : `— ${esc(story.source)}`
+    );
   }
-  return parts.join(' — ');
+  return lines.join('\n');
 }
 
 /**
- * 🌙 Post-market wrap.
+ * The daily post.
  *
  * @param {object} ctx  { indices, gainers, losers, story, now }
  * @returns {string}    one Telegram HTML message
  */
 export function formatMarketWrap(ctx = {}, opts = {}) {
   const now = opts.now ?? ctx.now ?? new Date();
+  const wrap = buildWrapData(ctx, { now });
+
   const blocks = [];
 
   // Header
-  const when = `${fmtDate(now)} • ${fmtTime(now)}`;
-  blocks.push([`🌙 <b>NEW AGE ALGOS</b> — <b>POST-MARKET</b> <i>${esc(when)}</i>`]);
+  blocks.push([`🇮🇳 <b>MARKET CLOSING WRAP</b> | ${esc(wrap.date)}`]);
 
-  // Index pulse — one line, the benchmark the movers hang off.
-  const indices = (ctx.indices ?? []).filter((i) => i && typeof i.value === 'number').slice(0, 3);
-  if (indices.length) blocks.push([`📈 ${indices.map(indexCell).join(' • ')}`]);
+  // Session headline — computed, never written
+  blocks.push([`${headEmoji(wrap.headline)} <b>${esc(wrap.headline)}</b>`]);
 
-  // Top gainers
-  const gainers = (ctx.gainers ?? []).slice(0, 3);
-  if (gainers.length) {
-    blocks.push([
-      `🟢 <b>TOP GAINERS</b> <i>NIFTY 500</i>`,
-      ...gainers.map((g, i) => moverLine(g, i + 1)),
-    ]);
+  // The benchmark line
+  if (wrap.indices.length) {
+    blocks.push([wrap.indices.map(indexRow).join('\n')]);
   }
 
-  // Top losers
-  const losers = (ctx.losers ?? []).slice(0, 3);
-  if (losers.length) {
-    blocks.push([
-      `🔴 <b>TOP LOSERS</b> <i>NIFTY 500</i>`,
-      ...losers.map((l, i) => moverLine(l, i + 1)),
-    ]);
+  // Key highlights
+  if (wrap.highlights.length) {
+    blocks.push([RULE, `📊 <b>KEY HIGHLIGHTS</b>`, ...wrap.highlights.map(highlightRow)]);
   }
 
   // The one story of the day
-  const story = newsLine(ctx.story);
-  if (story) blocks.push([`📰 <b>BIGGEST NEWS</b>`, story]);
+  const story = storyBlock(wrap.story);
+  if (story) {
+    blocks.push([RULE, `📰 <b>BIGGEST NEWS</b>`, story]);
+  }
+
+  // The movers
+  if (wrap.gainers.length || wrap.losers.length) {
+    blocks.push([
+      RULE,
+      `🔥 <b>TOP MOVERS</b> <i>NIFTY 500</i>`,
+      ...wrap.gainers.map(moverRow),
+      ...wrap.losers.map(moverRow),
+    ]);
+  }
 
   // Brand tail
   blocks.push([
-    SEP,
     `⚡ <b>NEW AGE ALGOS</b> · <i>Data-driven • Systematic • Transparent · Not investment advice</i>`,
   ]);
 
@@ -134,9 +130,9 @@ export function formatMarketWrap(ctx = {}, opts = {}) {
 /** Last resort: drop whole body lines (never the header or the brand tail). */
 function trimToBudget(text) {
   const lines = text.split('\n');
-  const head = lines.slice(0, 1);
-  const tail = lines.slice(-2);
-  let body = lines.slice(1, -2);
+  const head = lines.slice(0, 2);
+  const tail = lines.slice(-1);
+  let body = lines.slice(2, -1);
   const render = () => [...head, ...body, ...tail].join('\n');
   while (body.length && render().length > MESSAGE_LIMIT) body.pop();
   return render();

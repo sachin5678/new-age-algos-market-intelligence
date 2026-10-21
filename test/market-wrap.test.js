@@ -9,7 +9,7 @@ import {
   fetchMovers,
 } from '../src/market/nifty500.js';
 import { buildMarketWrapContext } from '../src/briefings/context.js';
-import { formatMarketWrap, WRAP_MAX_LINES } from '../src/telegram/market-wrap.js';
+import { formatMarketWrap } from '../src/telegram/market-wrap.js';
 
 /**
  * The post-market wrap replaced two briefings (pre-market + closing digest)
@@ -230,15 +230,18 @@ function wrapContext() {
 test('the wrap is ONE message with the index line, 3 gainers, 3 losers and one story', () => {
   const text = formatMarketWrap(wrapContext(), { now: NOW });
   assert.ok(text.length < 4096, 'must fit one Telegram message without chunking');
-  assert.ok(content(text).length <= WRAP_MAX_LINES, `too many content lines: ${content(text).length}`);
   assertBalanced(text, 'wrap');
   assertEscaped(text, 'wrap');
 
-  assert.ok(text.includes('POST-MARKET'), 'the wrap must say what it is');
-  assert.ok(text.includes('NIFTY 50 22,674.8 (-0.94%)'), 'the index line is missing');
+  // The market-closing-wrap format: title + date, session headline, the
+  // benchmark line, key highlights, the story, the movers.
+  assert.ok(text.includes('MARKET CLOSING WRAP'), 'the wrap must say what it is');
+  assert.ok(text.includes('21 OCT 2026'), 'the date is missing');
+  assert.ok(text.includes('NIFTY 50 FALLS'), 'the session headline is missing');
+  assert.ok(text.includes('NIFTY 50: 22,674.80'), 'the index line is missing');
 
-  const gainers = content(text).filter((l) => /^\d\. <b>[A-Z&0-9.]+<\/b> \+/.test(l));
-  const losers = content(text).filter((l) => /^\d\. <b>[A-Z&0-9.]+<\/b> -/.test(l));
+  const gainers = content(text).filter((l) => /^🟢 [A-Z&0-9.]+: \+/.test(l));
+  const losers = content(text).filter((l) => /^🔴 [A-Z&0-9.]+: -/.test(l));
   assert.equal(gainers.length, 3, `expected 3 gainers, got ${gainers.length}`);
   assert.equal(losers.length, 3, `expected 3 losers, got ${losers.length}`);
   assert.ok(!text.includes('EXTRA'), 'a 4th mover must not be printed');
@@ -249,6 +252,17 @@ test('the wrap is ONE message with the index line, 3 gainers, 3 losers and one s
     text.includes('<a href="https://www.livemint.com/economy/rbi-policy-october">Livemint</a>'),
     'the source must be hyperlinked'
   );
+});
+
+test('the movers are listed as one line per stock, gainers then losers', () => {
+  const text = formatMarketWrap(wrapContext(), { now: NOW });
+  const moverLines = content(text).filter((l) => /^(🟢|🔴) [A-Z&0-9.]+:/.test(l));
+  assert.equal(moverLines.length, 6, `expected 6 mover lines, got ${moverLines.length}`);
+  assert.ok(moverLines[0].startsWith('🟢 INDIACEM: +9.92%'), moverLines[0]);
+  assert.ok(moverLines[3].startsWith('🔴 BIRET: -17.65%'), moverLines[3]);
+  assert.ok(text.includes('TOP MOVERS'), 'the movers section header is missing');
+  assert.ok(text.includes('KEY HIGHLIGHTS'), 'the highlights section header is missing');
+  assert.ok(text.includes('BIGGEST NEWS'), 'the news section header is missing');
 });
 
 test('an ampersand in a company name is escaped', () => {
@@ -272,8 +286,9 @@ test('one missing side still prints the other', () => {
   const ctx = wrapContext();
   ctx.losers = [];
   const text = formatMarketWrap(ctx, { now: NOW });
-  assert.ok(text.includes('TOP GAINERS'), 'the gainers must survive');
-  assert.ok(!text.includes('TOP LOSERS'), 'a losers section appeared with no losers');
+  assert.ok(text.includes('INDIACEM'), 'the gainers must survive');
+  assert.ok(!/^🔴 /m.test(text), 'a loser line appeared with no losers');
+  assert.ok(text.includes('TOP MOVERS'), 'the movers section header is missing');
 });
 
 test('the story is the most important event of the day, not the newest', () => {

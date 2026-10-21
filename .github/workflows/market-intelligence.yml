@@ -101,15 +101,16 @@ jobs:
         if: ${{ github.event.inputs.job_type == 'health-check' }}
         run: node src/index.js --job-type health-check
 
-      # The wrap is ONE message (src/telegram/market-wrap.js): the day's top 3
-      # gainers and top 3 losers from the NIFTY 500 plus the single biggest
-      # news of the day — posted as ONE content-sized card
-      # (src/visual/market-wrap-card.js). The text digest is the fallback if
-      # the card cannot be rendered.
+      # The daily post is ONE text message (src/telegram/market-wrap.js): the
+      # benchmark line, the day's top 3 gainers and top 3 losers from the
+      # NIFTY 500, and the single biggest news of the day — in the
+      # market-closing-wrap format readers know. The card
+      # (src/visual/market-wrap-card.js) stays available with --visual, but the
+      # channel posts text.
       - name: Run post-market wrap
         if: ${{ github.event.inputs.job_type == 'market-wrap' || github.event.inputs.job_type == 'closing' }}
         env:
-          VISUAL_BRIEFING: 'true'
+          VISUAL_BRIEFING: 'false'
           VISUAL_PDF: 'false'
         run: node src/index.js --mode closing --briefing market-wrap ${{ env.NO_AI_FLAG }}
 
