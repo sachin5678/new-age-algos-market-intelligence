@@ -151,17 +151,29 @@ jobs:
           set -euo pipefail
           test_id=$(curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getMe" | jq -r .result.id)
           echo "test bot id: ${test_id}  chat: ${TEST_CHAT_ID}"
-          echo "--- membership ---"
-          curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getChat?chat_id=${TEST_CHAT_ID}" | jq -c '{ok, title: .result.title, type: .result.type}'
-          echo "--- promote so it can post ---"
+          echo "--- 1. bot-created invite link (the production bot is an admin there) ---"
+          link=$(curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/createChatInviteLink" \
+            -H 'Content-Type: application/json' -d "{\"chat_id\":${TEST_CHAT_ID}}" | tee /dev/stderr | jq -r '.result.invite_link // empty')
+          echo "--- 2. the test bot joins through it ---"
+          if [ -n "${link}" ]; then
+            curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/joinChat" \
+              -H 'Content-Type: application/json' -d "{\"invite_link\":\"${link}\"}"
+            echo
+            echo "--- 3. approve the join request (channel has join requests on) ---"
+            curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/approveChatJoinRequest" \
+              -H 'Content-Type: application/json' -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id}}" || true
+            echo
+          fi
+          echo "--- 4. promote so it can post ---"
           curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/promoteChatMember" \
             -H 'Content-Type: application/json' \
             -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id},\"can_post_messages\":true,\"can_manage_chat\":false,\"can_delete_messages\":false,\"can_restrict_members\":false,\"can_promote_members\":false,\"can_change_info\":false,\"can_invite_users\":false,\"can_pin_messages\":false,\"is_anonymous\":false}" || true
           echo
-          echo "--- ping ---"
+          echo "--- 5. verify + ping ---"
+          curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getChat?chat_id=${TEST_CHAT_ID}" | jq -c '{ok, title: .result.title, type: .result.type}'
           curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/sendMessage" \
             -H 'Content-Type: application/json' \
-            -d "{\"chat_id\":${TEST_CHAT_ID},\"text\":\"🤖 Test bot online — test messages land here from now on.\"}"
+            -d "{\"chat_id\":${TEST_CHAT_ID},\"text\":\"🤖 Test bot online — test messages land here from now on.\"}" || true
           echo
 
       - name: Save state to cache
