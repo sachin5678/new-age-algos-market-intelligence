@@ -17,36 +17,57 @@ node src/index.js --briefing market-wrap --dry-run   # render the post-market wr
 node src/index.js --briefing closing --dry-run       # alias of market-wrap
 ```
 
-## The post-market card (what the channel posts)
+## The daily post (what the channel posts)
 
-One **image** after the close, and nothing else during the day:
+ONE Telegram message after the close, and nothing else during the day:
 
 ```
-▌ MARKET CLOSING WRAP | 21 OCT 2026
-▌ NIFTY 50 FALLS 78 POINTS | INDIACEM LEADS THE TAPE
-▌ ◆ NIFTY 50 22,811.35            ● -0.34%
-▌ ◆ NIFTY BANK 54,976.90          ● -0.92%
-▌ ◆ SENSEX 73,709.69              ● -0.19%
-▌ 📊 KEY HIGHLIGHTS — NIFTY 50 closed 0.34% lower at 22,811.35 · INDIACEM led the index, up 12.04% …
-▌ 📰 BIGGEST NEWS — the day's biggest story, with its source
-▌ 🔥 TOP MOVERS (NIFTY 500) — 3 gainers, 3 losers, with % and price
-▌ ⚡ NEW AGE ALGOS · Data-driven • Systematic · Transparent
+🇮🇳 MARKET CLOSING WRAP | 21 OCT 2026
+
+📉 NIFTY 50 FALLS 78 POINTS | INDIACEM LEADS THE TAPE
+
+◆ NIFTY 50: 22,811.35  🔴 -0.34%
+◆ BANK NIFTY: 54,976.90  🔴 -0.92%
+◆ SENSEX: 73,709.69  🔴 -0.19%
+
+━━━━━━━━━━━━━━━━━━━━━━
+📊 KEY HIGHLIGHTS
+• NIFTY 50 closed 0.34% lower at 22,811.35
+• INDIACEM led the index, up 12.04%
+• BIRET lagged, down 17.65%
+
+━━━━━━━━━━━━━━━━━━━━━━
+📰 BIGGEST NEWS
+SpaceX Q3 2026 results: Shares jump 8% in pre-market after $4.4 billion profit…
+— Livemint Markets
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔥 TOP MOVERS NIFTY 500
+🟢 INDIACEM: +12.04% — India Cements Ltd.
+🟢 LTTS: +10.66% — L&T Technology Services Ltd.
+🟢 FRACTAL: +10.15% — Fractal Analytics Ltd.
+🔴 BIRET: -17.65% — Brookfield India Real Estate Trust
+🔴 EMBASSY: -15.04% — EMBASSY OFFICE PARKS REIT
+🔴 HSCL: -10.99% — Himadri Speciality Chemical Ltd.
+
+⚡ NEW AGE ALGOS · Data-driven • Systematic · Transparent · Not investment advice
 ```
 
 | Piece | Where |
 |---|---|
-| Card renderer (HTML → PNG, content-sized) | `src/visual/market-wrap-card.js` |
-| Delivery (render → QA → sendPhoto, text fallback) | `VisualDeliver.sendMarketWrap()` in `src/visual/deliver.js` |
+| The message (Telegram HTML, one post) | `src/telegram/market-wrap.js` |
+| The numbers behind it (headline, highlights, movers, story) | `src/briefings/wrap.js` |
 | Context (benchmark line, 3 + 3 movers, the day's story) | `buildMarketWrapContext()` in `src/briefings/context.js` |
-| Text fallback (same data, plain text) | `src/telegram/market-wrap.js` |
 | NIFTY 500 universe + day % change | `src/market/nifty500.js` |
 | NIFTY 50 / NIFTY BANK / SENSEX pulse (fallback) | `src/market/indices.js` |
 | The story of the day | the channel's event store first, market RSS feeds when the store is cold |
+| The same post as a PNG card (opt-in, `--visual`) | `src/visual/market-wrap-card.js` |
 
-**The card is derived, never written.** The session headline ("NIFTY 50 FALLS 78
+**The post is derived, never written.** The session headline ("NIFTY 50 FALLS 78
 POINTS | INDIACEM LEADS THE TAPE") is computed from the index value, its move
 and the top mover; the highlights are the same numbers in words. A section
-with no data is omitted. Every dynamic string is escaped.
+with no data is omitted. Every dynamic string is escaped, and the message is
+never split into two posts.
 
 **Where the numbers come from**
 
@@ -427,12 +448,11 @@ npm run premarket -- --visual --dry-run   # full pipeline, saves files, prints J
 
 ### Production behaviour (GitHub Actions)
 
-- The only scheduled channel post is the **post-market card** — ONE image
-  (`src/visual/market-wrap-card.js`): the benchmark line, the day's top 3
+- The only scheduled channel post is the **post-market wrap** — ONE text
+  message (`src/telegram/market-wrap.js`): the benchmark line, the day's top 3
   gainers and top 3 losers from the NIFTY 500, and the single biggest news of
-  the day. The card is content-sized (a quiet day renders a shorter card) and
-  the text wrap (`src/telegram/market-wrap.js`) is the fallback when the
-  render fails — a broken image is never sent.
+  the day, in the market-closing-wrap format. The same content renders as a
+  PNG card with `--visual`, but the channel posts text.
 - The pre-market summary and the intraday news alert stream are **retired**:
   the CLI no-ops both, so a stray dispatch posts nothing.
 - Intraday alerts are **formatted text** too (`VISUAL_ALERTS` off) — one message
