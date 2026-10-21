@@ -166,15 +166,25 @@ post the old format again.
 
 | | bot | chat | secret |
 |---|---|---|---|
-| `target=live` | the channel bot | the production channel | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
-| anything else | **@newagealgos_test_bot** | *New Age Algos Test — Bot* (supergroup) | `TELEGRAM_TEST_BOT_TOKEN`, `TELEGRAM_TEST_CHAT_ID` |
+| `target=live` | the channel bot (`@daily_quote_quantx_bot`) | the production channel | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| anything else | **@newagealgos_test_bot** | *New Age Algos Test* (the test channel) | `TELEGRAM_TEST_BOT_TOKEN`, `TELEGRAM_TEST_CHAT_ID` |
 
-The test bot has its own group on purpose: Telegram refuses to add a bot to a
-broadcast channel programmatically (`channels.inviteToChannel` → `USER_BOT`),
-and a supergroup member may post while a channel may not. The test group is
-also where the format changes get tried before anything reaches the live
-channel. The `setup-test-bot` job type re-provisions the bot if it is ever
-removed from the group.
+The test bot has its own identity so a format change can be tried without
+touching the channel bot. Both bots are admins of the test channel, so the
+`setup-test-bot` job type can re-provision the test bot at any time.
+
+**Adding a bot to a channel — the one thing the API will not do**
+`channels.inviteToChannel` refuses a bot on a broadcast channel
+(`USER_BOT`) and the Bot API's `promoteChatMember` needs the bot to already
+be a member. The way in is `channels.editAdmin` from the channel owner, and
+the GramJS class takes **camel case** rights (`postMessages`, `inviteUsers`,
+`addAdmins`) — passing the schema's snake_case silently means "no rights"
+and *demotes* the bot. `scripts/set-channel-admins.mjs` spells the rights out
+once, correctly, for both bots:
+
+```bash
+node scripts/set-channel-admins.mjs
+```
 
 Each job POSTs to
 `/repos/OWNER/REPO/actions/workflows/market-intelligence.yml/dispatches`
