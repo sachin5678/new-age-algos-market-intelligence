@@ -19,6 +19,7 @@ on:
           - closing
           - health-check
           - premarket
+          - setup-test-bot
       dry_run:
         description: 'Dry run mode (no Telegram send)'
         type: boolean
@@ -61,7 +62,10 @@ jobs:
       # repo secrets and the health-check keep working.
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       # Bot API transport — stateless, nothing to carry between runs.
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      # The TEST group is posted by the dedicated test bot
+      # (@newagealgos_test_bot); production uses the channel bot. Only an
+      # explicit target=live reaches production.
+      TELEGRAM_BOT_TOKEN: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_TEST_BOT_TOKEN }}
       # Guard rail: target=live is the ONLY thing that reaches production, and it
       # must be written explicitly in the cron-job.org job body. Omitted/test -> test group.
       TELEGRAM_CHAT_ID: ${{ github.event.inputs.target == 'live' && secrets.TELEGRAM_CHAT_ID || '-1004497477393' }}
@@ -130,6 +134,37 @@ jobs:
       - name: Pre-market briefing retired (no-op)
         if: ${{ github.event.inputs.job_type == 'premarket' }}
         run: node src/index.js --mode premarket --briefing premarket
+
+      # One-off provisioning: put the dedicated TEST bot into the test group and
+      # give it the right to post. Safe to re-run (it is a no-op when the bot is
+      # already a member). The production bot is the one that can hand out the
+      # invite link and promote — the test bot cannot add itself.
+      - name: Provision test bot
+        if: ${{ github.event.inputs.job_type == 'setup-test-bot' }}
+        env:
+          PROD_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TEST_BOT_TOKEN: ${{ secrets.TELEGRAM_TEST_BOT_TOKEN }}
+          TEST_CHAT_ID: '-1004497477393'
+        run: |
+          set -euo pipefail
+          prod_id=$(curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getMe" | jq -r .result.id)
+          test_id=$(curl -sS "https://api.telegram.org/bot${TEST_BOT_TOKEN}/getMe" | jq -r .result.id)
+          echo "prod bot: ${prod_id}  test bot: ${test_id}"
+          members=$(curl -sS "https://api.telegram.org/bot${PROD_BOT_TOKEN}/getChatMembers?chat_id=${TEST_CHAT_ID}" || true)
+          if echo "${members}" | jq -e --arg id "${test_id}" '.result[] | select(.user.id == ($id | tonumber))' >/dev/null 2>&1; then
+            echo "test bot is already a member"
+          else
+            link=$(curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/createChatInviteLink" \
+              -H 'Content-Type: application/json' -d "{\"chat_id\":${TEST_CHAT_ID}}" | jq -r .result.invite_link)
+            echo "invite link: ${link}"
+            curl -sS -X POST "https://api.telegram.org/bot${TEST_BOT_TOKEN}/joinChat" \
+              -H 'Content-Type: application/json' -d "{\"invite_link\":\"${link}\"}"
+            echo
+          fi
+          curl -sS -X POST "https://api.telegram.org/bot${PROD_BOT_TOKEN}/promoteChatMember" \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\":${TEST_CHAT_ID},\"user_id\":${test_id},\"can_post_messages\":true,\"can_manage_chat\":false,\"can_delete_messages\":false,\"can_restrict_members\":false,\"can_promote_members\":false,\"can_change_info\":false,\"can_invite_users\":false,\"can_pin_messages\":false,\"is_anonymous\":false}"
+          echo
 
       - name: Save state to cache
         if: always()

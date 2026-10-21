@@ -92,9 +92,9 @@ export function formatMarketWrap(ctx = {}, opts = {}) {
   // Session headline — computed, never written
   blocks.push([`${headEmoji(wrap.headline)} <b>${esc(wrap.headline)}</b>`]);
 
-  // The benchmark line
+  // The benchmark line — one index per line, with air between them.
   if (wrap.indices.length) {
-    blocks.push([wrap.indices.map(indexRow).join('\n')]);
+    blocks.push([wrap.indices.map(indexRow).join('\n\n')]);
   }
 
   // Key highlights
@@ -108,13 +108,13 @@ export function formatMarketWrap(ctx = {}, opts = {}) {
     blocks.push([RULE, `📰 <b>BIGGEST NEWS</b>`, story]);
   }
 
-  // The movers
+  // The movers — one stock per line, with air between them so the eye can
+  // walk the list instead of scanning a wall of rows.
   if (wrap.gainers.length || wrap.losers.length) {
     blocks.push([
       RULE,
       `🔥 <b>TOP MOVERS</b> <i>NIFTY 500</i>`,
-      ...wrap.gainers.map(moverRow),
-      ...wrap.losers.map(moverRow),
+      [...wrap.gainers, ...wrap.losers].map(moverRow).join('\n\n'),
     ]);
   }
 
